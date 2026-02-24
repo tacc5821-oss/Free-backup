@@ -1142,14 +1142,14 @@ async def delch(call: types.CallbackQuery):
 async def force_done(call: types.CallbackQuery):
     ok = await check_force_join(call.from_user.id)
 
-    if not ok:
-        await call.answer(
-            "❌ Channel အားလုံးကို Join မလုပ်ရသေးပါ။\n"
-            "ကျေးဇူးပြု၍ သတ်မှတ်ထားသော Channel များအားလုံးကို အရင် Join လုပ်ပါ။\n"
-            "ပြီးရင် 'Done' ကို နှိပ်ပါ။",
-            show_alert=True
-        )
-        return
+if not ok:
+    await call.answer(
+        "❌ Channel အားလုံးကို Join မလုပ်ရသေးပါ။\n"
+        "ကျေးဇူးပြု၍ သတ်မှတ်ထားသော Channel များအားလုံးကို အရင် Join လုပ်ပါ။\n"
+        "ပြီးရင် 'Done' ကို နှိပ်ပါ။",
+        show_alert=True
+    )
+    return
 
     await call.answer("joinပေးတဲ့အတွက်ကျေးဇူးတင်ပါတယ်!", show_alert=True)
     await call.message.delete()
