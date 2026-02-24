@@ -1,1 +1,231 @@
-
+{
+    "movies": [
+        {
+            "movie_name": "အမတတစ်ပါး",
+            "message_id": 288,
+            "storage_chat_id": -1002849045181
+        },
+        {
+            "movie_name": "ကောင်းကင်ဘုံသို့ စစ်ပြိုင်ခြင်း \nBattle Through The Heavens",
+            "message_id": 4,
+            "storage_chat_id": -1003793514659
+        },
+        {
+            "movie_name": "ကောင်းကင်ဘုံသို သွေးကလဲ့စား \nAgainst the Sky Supreme",
+            "message_id": 5,
+            "storage_chat_id": -1003793514659
+        },
+        {
+            "movie_name": "ဇဗ္ဗူဒီပါတောင်ကျွန်းသခင် \nShrouding The Heavens",
+            "message_id": 6,
+            "storage_chat_id": -1003793514659
+        },
+        {
+            "movie_name": "နှစ်တစ်သိန်း ချီစွမ်းအားရှင် \n\nOne Hundred Thousand of Qi Refining ",
+            "message_id": 7,
+            "storage_chat_id": -1003793514659
+        },
+        {
+            "movie_name": "ပြိုင်စံရှားထန်ဂိုဏ်း Ep92\n\nSoulLand 2 \nThe Peerless Tang Sect",
+            "message_id": 8,
+            "storage_chat_id": -1003793514659
+        },
+        {
+            "movie_name": "လှည့်ဖြားတတ်သောကံကြမ္မာ \n\nBig Brother",
+            "message_id": 9,
+            "storage_chat_id": -1003793514659
+        },
+        {
+            "movie_name": "နွားကျောင်းသားလေးရဲ့ နတ်ဘုရားမှတ်တမ်း\n\nTales Of Herding God",
+            "message_id": 10,
+            "storage_chat_id": -1003793514659
+        },
+        {
+            "movie_name": "ချိပ်ပိတ်ထားသော ရာဇပုလ္လင် \n\nThrone of Seal",
+            "message_id": 11,
+            "storage_chat_id": -1003793514659
+        },
+        {
+            "movie_name": "သားရဲထိန်းချုပ်သူ \n Global Domination: Mythical Beasts from Shan Hai Jing at My Command",
+            "message_id": 12,
+            "storage_chat_id": -1003793514659
+        },
+        {
+            "movie_name": "ကြယ်တာရာအနက်ကမ်းလွန် \nThe Other Side of Deep Space",
+            "message_id": 13,
+            "storage_chat_id": -1003793514659
+        },
+        {
+            "movie_name": "ငါ ဘာကောင်ကြီးမှမဟုတ်ဘူးလေကွာ\nThe Out-cast Season 6",
+            "message_id": 14,
+            "storage_chat_id": -1003793514659
+        },
+        {
+            "movie_name": "နတ်ဘုရားတို့ဂူဗိမ္မာန် \n\nTomb of Fallen Gods",
+            "message_id": 15,
+            "storage_chat_id": -1003793514659
+        },
+        {
+            "movie_name": "ခွန်းလွန်းတောင်မှ အဆုံးမဲ့ဒဏ္ဍာရီ",
+            "message_id": 16,
+            "storage_chat_id": -1003793514659
+        },
+        {
+            "movie_name": "သတ္တကမ္ဘာရဲ့ဇီဝိန်ချုပ်နတ်ဓား\n\nJade Dynasty",
+            "message_id": 17,
+            "storage_chat_id": -1003793514659
+        },
+        {
+            "movie_name": "ဒဏ္ဍာရီလာသိုင်းဝိဇ္ဇာ\n\nLegend Of Xianwu",
+            "message_id": 18,
+            "storage_chat_id": -1003793514659
+        },
+        {
+            "movie_name": "စွမ်းစွမ်းတမံ ချန်ပေရွှမ်\nThe Best Maestro ",
+            "message_id": 19,
+            "storage_chat_id": -1003793514659
+        },
+        {
+            "movie_name": "လောကတစ်သောင်း\n\nTen Thousand Worlds",
+            "message_id": 20,
+            "storage_chat_id": -1003793514659
+        },
+        {
+            "movie_name": "ထာ၀ရရှင်သန်သူရဲ့နေ့စဉ်မှတ်တမ်း\nThe Daily Life of Immortal King",
+            "message_id": 27,
+            "storage_chat_id": -1003793514659
+        },
+        {
+            "movie_name": "Soul Land1\n\nဝိညာဉ်တို့ကြီးစိုးရာမြေ",
+            "message_id": 28,
+            "storage_chat_id": -1003793514659
+        },
+        {
+            "movie_name": "နဂါးခွင်းသော ကောင်းကင်ပြင် \n\nDragon's Triumph In The Celestial Realm",
+            "message_id": 25,
+            "storage_chat_id": -1003793514659
+        },
+        {
+            "movie_name": "ငါ့ကိုရန်လာစသူတိုင်း ဇာတ်သိမ်းမကောင်း \n\nI become stronger when I meet a strong opponent",
+            "message_id": 26,
+            "storage_chat_id": -1003793514659
+        },
+        {
+            "movie_name": "Black Clover",
+            "message_id": 31,
+            "storage_chat_id": -1003793514659
+        },
+        {
+            "movie_name": "ဓားမုန်တိုင်း\n\nSword Rises in the Storm",
+            "message_id": 32,
+            "storage_chat_id": -1003793514659
+        },
+        {
+            "movie_name": "မိန်းမသားတို ကြီးစိုးရာ \n\nThe Might of Flames and Ice",
+            "message_id": 33,
+            "storage_chat_id": -1003793514659
+        },
+        {
+            "movie_name": "တာအိုဘုံအထက်က နတ်အရှင်",
+            "message_id": 34,
+            "storage_chat_id": -1003793514659
+        },
+        {
+            "movie_name": "စစ်နတ်ဘုရား\n\nGod Of War",
+            "message_id": 35,
+            "storage_chat_id": -1003793514659
+        },
+        {
+            "movie_name": "ရှိုးလော်သိုင်းနတ်ဘုရား \n\nMartial God Asura 2",
+            "message_id": 36,
+            "storage_chat_id": -1003793514659
+        },
+        {
+            "movie_name": "အနန္တတရား၏နိယာမ\n\nBeyond Time's Gaze",
+            "message_id": 38,
+            "storage_chat_id": -1003793514659
+        },
+        {
+            "movie_name": "ဇဗ္ဗူဒီပါတောင်ကျွန်းသခင်\n\nShrouding The Heaven",
+            "message_id": 39,
+            "storage_chat_id": -1003793514659
+        },
+        {
+            "movie_name": "လော့ယန်မြိုမှ လေပြေညင်း",
+            "message_id": 40,
+            "storage_chat_id": -1003793514659
+        }
+    ],
+    "users": [
+        {
+            "user_id": 2010895578,
+            "last_search": "2026-02-10T13:14:07.010928"
+        },
+        {
+            "user_id": 1735522859,
+            "last_search": "2026-02-10T13:18:07.288742"
+        },
+        {
+            "user_id": 6899778028,
+            "last_search": "2026-02-09T14:15:31.383255"
+        },
+        {
+            "user_id": 5177483194,
+            "last_search": null
+        },
+        {
+            "user_id": 6762363593,
+            "last_search": "2026-02-11T05:02:12.642812"
+        }
+    ],
+    "settings": [
+        {
+            "key": "maint",
+            "value": "off"
+        },
+        {
+            "key": "last_ad_index",
+            "value": 1
+        }
+    ],
+    "force_channels": [
+        {
+            "id": 1,
+            "chat_id": -1003516593509,
+            "title": "BOT Movie List",
+            "invite": "https://t.me/+oJ4TDYu9kqsyYzg1"
+        },
+        {
+            "id": 2,
+            "chat_id": -1003537436108,
+            "title": "Movie Request Group",
+            "invite": "https://t.me/+LOA6E3Dsr9diYTY1"
+        }
+    ],
+    "auto_delete": [
+        {
+            "type": "group",
+            "seconds": 5
+        },
+        {
+            "type": "dm",
+            "seconds": 10
+        }
+    ],
+    "custom_texts": [
+        {
+            "key": "searching",
+            "text": "မဂ်လာပါ",
+            "photo_id": null,
+            "sticker_id": "CAACAgUAAxkBAAINDmmIRNxG4gIyeLZuBbm1zJexZlLfAALzDwACHQ6RVXVDg0N7cDMSOgQ",
+            "animation_id": null
+        },
+        {
+            "key": "forcemsg",
+            "text": "🛠 Admin Panel",
+            "photo_id": null,
+            "sticker_id": null,
+            "animation_id": null
+        }
+    ]
+}
