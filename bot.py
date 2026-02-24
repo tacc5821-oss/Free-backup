@@ -15,11 +15,9 @@ from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
     InputFile, ContentType
 )
-from motor.motor_asyncio import AsyncIOMotorClient
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OWNER_ID = int(os.getenv("OWNER_ID"))
-MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
 
 COOLDOWN = 90
 BATCH_SIZE = 30
@@ -28,9 +26,6 @@ AUTO_DELETE_OPTIONS = [5, 10, 30]
 bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
 storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
-
-mongo_client = AsyncIOMotorClient(MONGO_URI)
-db = mongo_client.movie_bot
 
 ACTIVE_USERS = 0
 WAITING_QUEUE = asyncio.Queue()
@@ -41,6 +36,7 @@ MOVIES_DICT = {}
 DATA_DIR = "data"
 os.makedirs(DATA_DIR, exist_ok=True)
 
+# ==================== JSON Functions ====================
 def load_json(name):
     path = f"{DATA_DIR}/{name}.json"
     if not os.path.exists(path):
@@ -53,25 +49,9 @@ def save_json(name, data):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
 
-def parse_telegram_format(text, user_name="", user_mention=""):
-    if not text:
-        return text
-
-    text = text.replace("{mention}", user_mention)
-    text = text.replace("{name}", user_name)
-
-    text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
-    text = re.sub(r'\*(.*?)\*', r'<i>\1</i>', text)
-    text = re.sub(r'__(.*?)__', r'<u>\1</u>', text)
-    text = re.sub(r'~~(.*?)~~', r'<s>\1</s>', text)
-    text = re.sub(r'`(.*?)`', r'<code>\1</code>', text)
-    text = re.sub(r'```(.*?)```', r'<pre>\1</pre>', text, flags=re.DOTALL)
-
-    return text
-
+# ==================== Movies ====================
 async def get_movies():
-    movies = await db.movies.find().to_list(None)
-    return movies
+    return load_json("movies")
 
 async def load_movies_cache():
     global MOVIES_DICT
@@ -89,43 +69,51 @@ def find_movie_by_code(code: str) -> Optional[dict]:
     return MOVIES_DICT.get(code.upper())
 
 async def add_movie_record(name, code, msgid, chatid):
-    await db.movies.insert_one({
+    movies = load_json("movies")
+    movies.append({
         "movie_name": name,
         "movie_code": code.upper(),
         "message_id": msgid,
         "storage_chat_id": chatid
     })
+    save_json("movies", movies)
     await reload_movies_cache()
 
 async def delete_movie(code):
-    await db.movies.delete_many({"movie_code": code.upper()})
+    movies = load_json("movies")
+    movies = [m for m in movies if m.get("movie_code", "").upper() != code.upper()]
+    save_json("movies", movies)
     await reload_movies_cache()
 
+# ==================== Ads ====================
 async def get_ads():
-    ads = await db.ads.find().to_list(None)
-    return ads
+    return load_json("ads")
 
 async def add_ad(msgid, chatid):
-    count = await db.ads.count_documents({})
-    await db.ads.insert_one({
-        "id": count + 1,
+    ads = load_json("ads")
+    ads.append({
+        "id": len(ads) + 1,
         "message_id": msgid,
         "storage_chat_id": chatid
     })
+    save_json("ads", ads)
 
 async def delete_ad(aid):
-    await db.ads.delete_one({"id": int(aid)})
+    ads = load_json("ads")
+    ads = [a for a in ads if a["id"] != int(aid)]
+    save_json("ads", ads)
 
+# ==================== Users ====================
 async def get_users():
-    users = await db.users.find().to_list(None)
-    return users
+    return load_json("users")
 
 async def add_new_user(uid, name, mention):
-    existing = await db.users.find_one({"user_id": uid})
-    if existing:
-        return False
-
-    await db.users.insert_one({
+    users = load_json("users")
+    for u in users:
+        if u["user_id"] == uid:
+            return False
+    
+    users.append({
         "user_id": uid,
         "last_search": None,
         "join_date": datetime.now().isoformat(),
@@ -133,62 +121,74 @@ async def add_new_user(uid, name, mention):
         "mention": mention,
         "search_count": 0
     })
+    save_json("users", users)
     return True
 
 async def get_user_count():
-    return await db.users.count_documents({})
+    return len(load_json("users"))
 
 async def update_user_search(uid):
-    existing = await db.users.find_one({"user_id": uid})
-    if existing:
-        await db.users.update_one(
-            {"user_id": uid},
-            {
-                "$set": {"last_search": datetime.now().isoformat()},
-                "$inc": {"search_count": 1}
-            }
-        )
-    else:
-        await db.users.insert_one({
+    users = load_json("users")
+    found = False
+    for u in users:
+        if u["user_id"] == uid:
+            u["last_search"] = datetime.now().isoformat()
+            u["search_count"] = u.get("search_count", 0) + 1
+            found = True
+            break
+    if not found:
+        users.append({
             "user_id": uid,
             "last_search": datetime.now().isoformat(),
             "join_date": datetime.now().isoformat(),
+            "name": "Unknown",
+            "mention": "",
             "search_count": 1
         })
+    save_json("users", users)
 
 async def get_user_last(uid):
-    user = await db.users.find_one({"user_id": uid})
-    if user:
-        return user.get("last_search")
+    users = load_json("users")
+    for u in users:
+        if u["user_id"] == uid:
+            return u.get("last_search")
     return None
 
 async def get_top_searches(limit=5):
-    pipeline = [
-        {"$match": {"search_count": {"$gt": 0}}},
-        {"$sort": {"search_count": -1}},
-        {"$limit": limit}
-    ]
-    return await db.users.aggregate(pipeline).to_list(None)
+    users = load_json("users")
+    filtered = [u for u in users if u.get("search_count", 0) > 0]
+    sorted_users = sorted(filtered, key=lambda x: x.get("search_count", 0), reverse=True)
+    return sorted_users[:limit]
 
 async def get_daily_active_users():
+    users = load_json("users")
     yesterday = datetime.now() - timedelta(days=1)
-    count = await db.users.count_documents({
-        "last_search": {"$gte": yesterday.isoformat()}
-    })
+    count = 0
+    for u in users:
+        last = u.get("last_search")
+        if last and datetime.fromisoformat(last) >= yesterday:
+            count += 1
     return count
 
+# ==================== Settings ====================
 async def get_setting(key):
-    setting = await db.settings.find_one({"key": key})
-    if setting:
-        return setting.get("value")
+    settings = load_json("settings")
+    for s in settings:
+        if s["key"] == key:
+            return s.get("value")
     return None
 
 async def set_setting(key, value):
-    await db.settings.update_one(
-        {"key": key},
-        {"$set": {"key": key, "value": value}},
-        upsert=True
-    )
+    settings = load_json("settings")
+    found = False
+    for s in settings:
+        if s["key"] == key:
+            s["value"] = value
+            found = True
+            break
+    if not found:
+        settings.append({"key": key, "value": value})
+    save_json("settings", settings)
 
 async def get_next_ad_index():
     current = await get_setting("last_ad_index")
@@ -208,74 +208,96 @@ async def get_next_ad_index():
     await set_setting("last_ad_index", next_idx)
     return current % len(ads)
 
+# ==================== Auto Delete ====================
 async def get_auto_delete_config():
-    configs = await db.auto_delete.find().to_list(None)
+    configs = load_json("auto_delete")
     if not configs:
         configs = [
             {"type": "group", "seconds": 0},
             {"type": "dm", "seconds": 0}
         ]
-        await db.auto_delete.insert_many(configs)
+        save_json("auto_delete", configs)
     return configs
 
 async def set_auto_delete_config(config_type, value):
-    await db.auto_delete.update_one(
-        {"type": config_type},
-        {"$set": {"type": config_type, "seconds": value}},
-        upsert=True
-    )
+    configs = load_json("auto_delete")
+    found = False
+    for c in configs:
+        if c["type"] == config_type:
+            c["seconds"] = value
+            found = True
+            break
+    if not found:
+        configs.append({"type": config_type, "seconds": value})
+    save_json("auto_delete", configs)
 
+# ==================== Force Channels ====================
 async def get_force_channels():
-    channels = await db.force_channels.find().to_list(None)
-    return channels
+    return load_json("force_channels")
 
 async def add_force_channel(chat_id, title, invite):
-    count = await db.force_channels.count_documents({})
-    await db.force_channels.insert_one({
-        "id": count + 1,
+    channels = load_json("force_channels")
+    channels.append({
+        "id": len(channels) + 1,
         "chat_id": chat_id,
         "title": title,
         "invite": invite
     })
+    save_json("force_channels", channels)
 
 async def delete_force_channel(cid):
-    await db.force_channels.delete_one({"id": int(cid)})
+    channels = load_json("force_channels")
+    channels = [c for c in channels if c["id"] != int(cid)]
+    save_json("force_channels", channels)
 
+# ==================== Custom Texts ====================
 async def get_custom_text(key):
-    text_doc = await db.custom_texts.find_one({"key": key})
-    if text_doc:
-        return {
-            "text": text_doc.get("text", ""),
-            "photo_id": text_doc.get("photo_id"),
-            "sticker_id": text_doc.get("sticker_id"),
-            "animation_id": text_doc.get("animation_id")
-        }
+    texts = load_json("custom_texts")
+    for t in texts:
+        if t["key"] == key:
+            return {
+                "text": t.get("text", ""),
+                "photo_id": t.get("photo_id"),
+                "sticker_id": t.get("sticker_id"),
+                "animation_id": t.get("animation_id")
+            }
     return {"text": "", "photo_id": None, "sticker_id": None, "animation_id": None}
 
 async def set_custom_text(key, text=None, photo_id=None, sticker_id=None, animation_id=None):
-    await db.custom_texts.update_one(
-        {"key": key},
-        {
-            "$set": {
-                "key": key,
-                "text": text or "",
-                "photo_id": photo_id,
-                "sticker_id": sticker_id,
-                "animation_id": animation_id
-            }
-        },
-        upsert=True
-    )
+    texts = load_json("custom_texts")
+    found = False
+    for t in texts:
+        if t["key"] == key:
+            if text is not None:
+                t["text"] = text
+            if photo_id:
+                t["photo_id"] = photo_id
+            if sticker_id:
+                t["sticker_id"] = sticker_id
+            if animation_id:
+                t["animation_id"] = animation_id
+            found = True
+            break
+    if not found:
+        texts.append({
+            "key": key,
+            "text": text or "",
+            "photo_id": photo_id,
+            "sticker_id": sticker_id,
+            "animation_id": animation_id
+        })
+    save_json("custom_texts", texts)
 
+# ==================== Start Welcome ====================
 async def get_start_welcome():
-    welcome_list = await db.start_welcome.find().to_list(None)
-    if not welcome_list:
+    welcome = load_json("start_welcome")
+    if not welcome:
         return [{
             "text": "👋 **Welcome to Movie Bot!**\n\nဇာတ်ကားရှာရန် Code ပို့ပေးပါ။",
             "photo_id": None,
             "caption": ""
         }]
-    return welcome_list
+    return welcome
 
 async def get_next_welcome_photo():
     data = await get_start_welcome()
@@ -297,37 +319,36 @@ async def get_next_welcome_photo():
     return data[current % len(data)]
 
 async def add_start_welcome(text=None, photo_id=None, caption=None):
-    count = await db.start_welcome.count_documents({})
-    await db.start_welcome.insert_one({
-        "id": count + 1,
+    welcome = load_json("start_welcome")
+    welcome.append({
+        "id": len(welcome) + 1,
         "text": text or "👋 **Welcome to Movie Bot!**",
         "photo_id": photo_id,
         "caption": caption or ""
     })
+    save_json("start_welcome", welcome)
 
 async def delete_start_welcome(index):
-    welcome_list = await get_start_welcome()
-    if 0 <= index < len(welcome_list):
-        item = welcome_list[index]
-        if "_id" in item:
-            await db.start_welcome.delete_one({"_id": item["_id"]})
-            return True
+    welcome = load_json("start_welcome")
+    if 0 <= index < len(welcome):
+        welcome.pop(index)
+        save_json("start_welcome", welcome)
+        return True
     return False
 
 async def get_start_welcome_count():
-    return await db.start_welcome.count_documents({})
+    return len(load_json("start_welcome"))
 
+# ==================== Start Buttons ====================
 async def get_start_buttons():
-    buttons = await db.start_buttons.find().to_list(None)
-    return buttons
+    return load_json("start_buttons")
 
 async def add_start_button(name, link, row=0, button_type="url", callback_data=None):
-    count = await db.start_buttons.count_documents({})
+    buttons = load_json("start_buttons")
     if row == 0:
-        if count > 0:
-            max_button = await db.start_buttons.find_one(sort=[("row", -1)])
-            max_row = max_button.get("row", 0) if max_button else 0
-            buttons_in_row = await db.start_buttons.count_documents({"row": max_row})
+        if buttons:
+            max_row = max(b.get("row", 0) for b in buttons)
+            buttons_in_row = sum(1 for b in buttons if b.get("row") == max_row)
             if buttons_in_row >= 2:
                 row = max_row + 1
             else:
@@ -335,36 +356,37 @@ async def add_start_button(name, link, row=0, button_type="url", callback_data=N
         else:
             row = 0
 
-    await db.start_buttons.insert_one({
-        "id": count + 1,
+    buttons.append({
+        "id": len(buttons) + 1,
         "name": name,
         "link": link,
         "row": row,
         "type": button_type,
         "callback_data": callback_data
     })
+    save_json("start_buttons", buttons)
 
 async def update_start_button(btn_id, name=None, link=None, row=None, button_type=None, callback_data=None):
-    update_dict = {}
-    if name:
-        update_dict["name"] = name
-    if link:
-        update_dict["link"] = link
-    if row is not None:
-        update_dict["row"] = row
-    if button_type:
-        update_dict["type"] = button_type
-    if callback_data:
-        update_dict["callback_data"] = callback_data
-
-    if update_dict:
-        await db.start_buttons.update_one(
-            {"id": int(btn_id)},
-            {"$set": update_dict}
-        )
+    buttons = load_json("start_buttons")
+    for b in buttons:
+        if b["id"] == int(btn_id):
+            if name:
+                b["name"] = name
+            if link:
+                b["link"] = link
+            if row is not None:
+                b["row"] = row
+            if button_type:
+                b["type"] = button_type
+            if callback_data:
+                b["callback_data"] = callback_data
+            break
+    save_json("start_buttons", buttons)
 
 async def delete_start_button(btn_id):
-    await db.start_buttons.delete_one({"id": int(btn_id)})
+    buttons = load_json("start_buttons")
+    buttons = [b for b in buttons if b["id"] != int(btn_id)]
+    save_json("start_buttons", buttons)
 
 async def get_start_buttons_by_row():
     buttons = await get_start_buttons()
@@ -375,6 +397,23 @@ async def get_start_buttons_by_row():
             rows[row] = []
         rows[row].append(btn)
     return rows
+
+# ==================== Helper Functions ====================
+def parse_telegram_format(text, user_name="", user_mention=""):
+    if not text:
+        return text
+
+    text = text.replace("{mention}", user_mention)
+    text = text.replace("{name}", user_name)
+
+    text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
+    text = re.sub(r'\*(.*?)\*', r'<i>\1</i>', text)
+    text = re.sub(r'__(.*?)__', r'<u>\1</u>', text)
+    text = re.sub(r'~~(.*?)~~', r'<s>\1</s>', text)
+    text = re.sub(r'`(.*?)`', r'<code>\1</code>', text)
+    text = re.sub(r'```(.*?)```', r'<pre>\1</pre>', text, flags=re.DOTALL)
+
+    return text
 
 auto_delete_tasks: Dict[str, asyncio.Task] = {}
 
@@ -503,6 +542,7 @@ def main_menu(is_owner=False):
         kb.add(KeyboardButton("📊 Statistics"))
     return kb
 
+# ==================== Start Command ====================
 @dp.message_handler(commands=["start"])
 async def start(msg: types.Message):
     is_owner = msg.from_user.id == OWNER_ID
@@ -566,12 +606,20 @@ async def send_start_welcome(msg: types.Message, is_owner: bool):
     )
 
     if welcome_data and welcome_data.get("photo_id"):
-        await msg.answer_photo(
-            photo=welcome_data["photo_id"],
-            caption=welcome_text,
-            reply_markup=kb,
-            protect_content=True
-        )
+        try:
+            await msg.answer_photo(
+                photo=welcome_data["photo_id"],
+                caption=welcome_text,
+                reply_markup=kb,
+                protect_content=True
+            )
+        except Exception as e:
+            print(f"Error sending welcome photo: {e}")
+            await msg.answer(
+                welcome_text,
+                reply_markup=kb,
+                protect_content=True
+            )
     else:
         await msg.answer(
             welcome_text,
@@ -579,6 +627,7 @@ async def send_start_welcome(msg: types.Message, is_owner: bool):
             protect_content=True
         )
 
+# ==================== Start Button Management ====================
 class StartButtonManagement(StatesGroup):
     waiting_for_name = State()
     waiting_for_link = State()
@@ -710,6 +759,7 @@ async def delete_start_button_confirm(call: types.CallbackQuery):
     await call.answer("✅ Button ဖျက်ပြီးပါပြီ။", show_alert=True)
     await manage_start_buttons(call)
 
+# ==================== Welcome Management ====================
 class StartWelcomeManagement(StatesGroup):
     waiting_for_photo = State()
     waiting_for_delete_index = State()
@@ -840,6 +890,7 @@ async def delete_welcome_item_confirm(call: types.CallbackQuery):
 
     await manage_start_welcome(call)
 
+# ==================== Admin Menu ====================
 def admin_menu():
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(InlineKeyboardButton("➕ Add Movie", callback_data="add_movie"),
@@ -859,6 +910,7 @@ def admin_menu():
     kb.add(InlineKeyboardButton("⬅ Back", callback_data="back"))
     return kb
 
+# ==================== Ads Management ====================
 class AddAd(StatesGroup):
     msgid = State()
     chatid = State()
@@ -921,6 +973,7 @@ async def del_ad_process(call: types.CallbackQuery):
     await call.answer("✅ Ad deleted", show_alert=True)
     await ads_manager(call)
 
+# ==================== Admin Panel ====================
 @dp.message_handler(lambda m: m.text == "🛠 Admin Panel")
 async def admin_panel(msg: types.Message):
     if msg.from_user.id != OWNER_ID:
@@ -950,6 +1003,7 @@ async def statistics_panel(msg: types.Message):
 
     await msg.answer(text, protect_content=True)
 
+# ==================== Navigation ====================
 @dp.callback_query_handler(lambda c: c.data == "back")
 async def back(call: types.CallbackQuery):
     await call.message.delete()
@@ -961,6 +1015,11 @@ async def back_to_start(call: types.CallbackQuery):
     await call.message.delete()
     await send_start_welcome(call.message, call.from_user.id == OWNER_ID)
 
+@dp.callback_query_handler(lambda c: c.data == "back_admin")
+async def back_admin(call: types.CallbackQuery):
+    await call.message.edit_text("🛠 Admin Panel", reply_markup=admin_menu())
+
+# ==================== Auto Delete ====================
 @dp.callback_query_handler(lambda c: c.data == "auto_delete")
 async def auto_delete_menu(call: types.CallbackQuery):
     if call.from_user.id != OWNER_ID:
@@ -1017,10 +1076,7 @@ async def disable_all_auto_delete(call: types.CallbackQuery):
     await call.answer("All auto-delete disabled!", show_alert=True)
     await auto_delete_menu(call)
 
-@dp.callback_query_handler(lambda c: c.data == "back_admin")
-async def back_admin(call: types.CallbackQuery):
-    await call.message.edit_text("🛠 Admin Panel", reply_markup=admin_menu())
-
+# ==================== Clear All Data ====================
 @dp.callback_query_handler(lambda c: c.data == "clear_all_data")
 async def clear_all_data_confirm(call: types.CallbackQuery):
     if call.from_user.id != OWNER_ID:
@@ -1028,28 +1084,30 @@ async def clear_all_data_confirm(call: types.CallbackQuery):
     kb = InlineKeyboardMarkup()
     kb.add(InlineKeyboardButton("✅ Confirm Clear All", callback_data="confirm_clear_all"))
     kb.add(InlineKeyboardButton("⬅ Back", callback_data="back_admin"))
-    await call.message.edit_text("⚠️ <b>Are you sure you want to delete ALL data?</b>\nThis includes movies, users, ads, and settings from MongoDB.", reply_markup=kb)
+    await call.message.edit_text("⚠️ <b>Are you sure you want to delete ALL data?</b>\nThis includes movies, users, ads, and settings.", reply_markup=kb)
 
 @dp.callback_query_handler(lambda c: c.data == "confirm_clear_all")
 async def process_clear_all_data(call: types.CallbackQuery):
     if call.from_user.id != OWNER_ID:
         return
 
-    await db.movies.delete_many({})
-    await db.users.delete_many({})
-    await db.ads.delete_many({})
-    await db.settings.delete_many({})
-    await db.force_channels.delete_many({})
-    await db.custom_texts.delete_many({})
-    await db.auto_delete.delete_many({})
-    await db.start_buttons.delete_many({})
-    await db.start_welcome.delete_many({})
+    # Clear all JSON files
+    save_json("movies", [])
+    save_json("users", [])
+    save_json("ads", [])
+    save_json("settings", [])
+    save_json("force_channels", [])
+    save_json("custom_texts", [])
+    save_json("auto_delete", [])
+    save_json("start_buttons", [])
+    save_json("start_welcome", [])
 
     await reload_movies_cache()
 
-    await call.message.edit_text("✅ All data has been cleared from MongoDB!", reply_markup=admin_menu())
+    await call.message.edit_text("✅ All data has been cleared!", reply_markup=admin_menu())
     await call.answer("Data cleared", show_alert=True)
 
+# ==================== Force Channels ====================
 @dp.callback_query_handler(lambda c: c.data == "force")
 async def force(call: types.CallbackQuery):
     if call.from_user.id != OWNER_ID:
@@ -1138,12 +1196,14 @@ async def delch(call: types.CallbackQuery):
 
     await force(call)
 
+# ==================== Force Done ====================
 @dp.callback_query_handler(lambda c: c.data == "force_done")
 async def force_done(call: types.CallbackQuery):
     ok = await check_force_join(call.from_user.id)
 
     if not ok:
         await call.answer(
+            "❌ Channel အားလုံးကို Join မလုပ်ရသေးပါ။\n"
             "ကျေးဇူးပြု၍ သတ်မှတ်ထားသော Channel များအားလုံးကို အရင် Join လုပ်ပါ။\n"
             "ပြီးရင် 'Done' ကို နှိပ်ပါ။",
             show_alert=True
@@ -1154,6 +1214,7 @@ async def force_done(call: types.CallbackQuery):
     await call.message.delete()
     await send_start_welcome(call.message, call.from_user.id == OWNER_ID)
 
+# ==================== Edit Text ====================
 class EditText(StatesGroup):
     waiting = State()
 
@@ -1234,12 +1295,14 @@ async def edit_text_done(msg: types.Message, state: FSMContext):
 
     await state.finish()
 
+# ==================== Movie List ====================
 @dp.message_handler(lambda m: m.text == "📋 Movie List")
 async def movie_list_redirect(msg: types.Message):
     kb = InlineKeyboardMarkup()
     kb.add(InlineKeyboardButton("🎬 Movie + Code ကြည့်ရန်", url="https://t.me/seatvmmmovielist"))
     await msg.answer("📌 ရှိတဲ့ Code များကြည့်ရန် အောက်ပါ Button ကိုနှိပ်ပါ", reply_markup=kb, protect_content=True)
 
+# ==================== Maintenance ====================
 @dp.callback_query_handler(lambda c: c.data == "maint")
 async def maint(call: types.CallbackQuery):
     if call.from_user.id != OWNER_ID:
@@ -1249,6 +1312,7 @@ async def maint(call: types.CallbackQuery):
     await set_setting("maint", new)
     await call.answer(f"Maintenance: {new.upper()}", show_alert=True)
 
+# ==================== Add Movie ====================
 class AddMovie(StatesGroup):
     name = State()
     code = State()
@@ -1299,6 +1363,7 @@ async def add_movie_chatid(msg: types.Message, state: FSMContext):
     await msg.answer(f"✅ ဇာတ်ကားထည့်ပြီးပါပြီ!\n\nနာမည်: {data['name']}\nCode: {data['code']}", protect_content=True)
     await state.finish()
 
+# ==================== Delete Movie ====================
 class DelMovie(StatesGroup):
     code = State()
 
@@ -1317,6 +1382,7 @@ async def del_movie_code(msg: types.Message, state: FSMContext):
     await msg.answer(f"✅ Code `{code}` ဖျက်ပြီးပါပြီ။", protect_content=True)
     await state.finish()
 
+# ==================== Broadcast ====================
 class Broadcast(StatesGroup):
     waiting_content = State()
     waiting_buttons = State()
@@ -1478,6 +1544,7 @@ async def bc_cancel(call: types.CallbackQuery, state: FSMContext):
     await call.message.answer("❌ Broadcast cancelled", protect_content=True)
     await call.answer()
 
+# ==================== OS Command ====================
 @dp.message_handler(commands=["os"])
 async def os_command(msg: types.Message):
     if msg.chat.type not in ["group", "supergroup"]:
@@ -1492,7 +1559,7 @@ async def os_command(msg: types.Message):
         "• Bot Status: ✅ Online\n"
         "• Queue System: 🟢 Active (Batch: 30)\n"
         "• Auto-Delete: " + ("✅ " + str(group_sec) + "s" if group_sec > 0 else "❌ Disabled") + "\n"
-        "• Version: 4.0 (MongoDB)\n\n"
+        "• Version: 4.0 (JSON Storage)\n\n"
         "Use /os name command.",
         protect_content=True
     )
@@ -1501,6 +1568,7 @@ async def os_command(msg: types.Message):
         asyncio.create_task(schedule_auto_delete("group", msg.chat.id, response.message_id, group_sec))
         asyncio.create_task(schedule_auto_delete("group", msg.chat.id, msg.message_id, group_sec))
 
+# ==================== Search ====================
 @dp.message_handler()
 async def search(msg: types.Message):
     if msg.text == "🔍 Search Movie":
@@ -1602,6 +1670,7 @@ async def search(msg: types.Message):
         async with BATCH_LOCK:
             ACTIVE_USERS -= 1
 
+# ==================== Backup ====================
 @dp.callback_query_handler(lambda c: c.data == "backup")
 async def backup_db(call: types.CallbackQuery):
     if call.from_user.id != OWNER_ID:
@@ -1610,20 +1679,14 @@ async def backup_db(call: types.CallbackQuery):
     data = {
         "movies": await get_movies(),
         "users": await get_users(),
-        "settings": await db.settings.find().to_list(None),
+        "settings": load_json("settings"),
         "force_channels": await get_force_channels(),
         "auto_delete": await get_auto_delete_config(),
-        "custom_texts": await db.custom_texts.find().to_list(None),
+        "custom_texts": load_json("custom_texts"),
         "start_buttons": await get_start_buttons(),
         "start_welcome": await get_start_welcome(),
         "ads": await get_ads()
     }
-
-    for key in data:
-        if data[key]:
-            for item in data[key]:
-                if "_id" in item:
-                    item["_id"] = str(item["_id"])
 
     with open("backup.json", "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
@@ -1631,12 +1694,13 @@ async def backup_db(call: types.CallbackQuery):
     await bot.send_document(
         OWNER_ID,
         InputFile("backup.json"),
-        caption="📥 MongoDB Backup File",
+        caption="📥 JSON Backup File",
         protect_content=True
     )
 
     await call.answer("Backup sent!", show_alert=True)
 
+# ==================== Restore ====================
 @dp.callback_query_handler(lambda c: c.data == "restore")
 async def restore_request(call: types.CallbackQuery):
     if call.from_user.id != OWNER_ID:
@@ -1655,75 +1719,32 @@ async def restore_process(msg: types.Message):
         with open("restore.json", "r", encoding="utf-8") as f:
             data = json.load(f)
 
-        await db.movies.delete_many({})
-        await db.users.delete_many({})
-        await db.settings.delete_many({})
-        await db.force_channels.delete_many({})
-        await db.auto_delete.delete_many({})
-        await db.custom_texts.delete_many({})
-        await db.start_buttons.delete_many({})
-        await db.start_welcome.delete_many({})
-        await db.ads.delete_many({})
-
+        # Restore data
         if data.get("movies"):
-            for item in data["movies"]:
-                if "_id" in item:
-                    del item["_id"]
-            await db.movies.insert_many(data["movies"])
-
+            save_json("movies", data["movies"])
         if data.get("users"):
-            for item in data["users"]:
-                if "_id" in item:
-                    del item["_id"]
-            await db.users.insert_many(data["users"])
-
+            save_json("users", data["users"])
         if data.get("settings"):
-            for item in data["settings"]:
-                if "_id" in item:
-                    del item["_id"]
-            await db.settings.insert_many(data["settings"])
-
+            save_json("settings", data["settings"])
         if data.get("force_channels"):
-            for item in data["force_channels"]:
-                if "_id" in item:
-                    del item["_id"]
-            await db.force_channels.insert_many(data["force_channels"])
-
+            save_json("force_channels", data["force_channels"])
         if data.get("auto_delete"):
-            for item in data["auto_delete"]:
-                if "_id" in item:
-                    del item["_id"]
-            await db.auto_delete.insert_many(data["auto_delete"])
-
+            save_json("auto_delete", data["auto_delete"])
         if data.get("custom_texts"):
-            for item in data["custom_texts"]:
-                if "_id" in item:
-                    del item["_id"]
-            await db.custom_texts.insert_many(data["custom_texts"])
-
+            save_json("custom_texts", data["custom_texts"])
         if data.get("start_buttons"):
-            for item in data["start_buttons"]:
-                if "_id" in item:
-                    del item["_id"]
-            await db.start_buttons.insert_many(data["start_buttons"])
-
+            save_json("start_buttons", data["start_buttons"])
         if data.get("start_welcome"):
-            for item in data["start_welcome"]:
-                if "_id" in item:
-                    del item["_id"]
-            await db.start_welcome.insert_many(data["start_welcome"])
-
+            save_json("start_welcome", data["start_welcome"])
         if data.get("ads"):
-            for item in data["ads"]:
-                if "_id" in item:
-                    del item["_id"]
-            await db.ads.insert_many(data["ads"])
+            save_json("ads", data["ads"])
 
         await reload_movies_cache()
-        await msg.answer("✅ Restore Completed from MongoDB backup!", protect_content=True)
+        await msg.answer("✅ Restore Completed from JSON backup!", protect_content=True)
     except Exception as e:
         await msg.answer(f"❌ Restore Failed: {str(e)}", protect_content=True)
 
+# ==================== Group Message Handler ====================
 @dp.message_handler(content_types=ContentType.ANY, chat_type=["group", "supergroup"])
 async def group_message_handler(msg: types.Message):
     config = await get_auto_delete_config()
@@ -1732,67 +1753,17 @@ async def group_message_handler(msg: types.Message):
     if group_sec > 0 and not msg.text.startswith('/'):
         asyncio.create_task(schedule_auto_delete("group", msg.chat.id, msg.message_id, group_sec))
 
-async def migrate_json_to_mongodb():
-    print("🔄 Migrating JSON data to MongoDB...")
-
-    try:
-        movies = load_json("movies")
-        if movies and await db.movies.count_documents({}) == 0:
-            await db.movies.insert_many(movies)
-            print(f"✅ Migrated {len(movies)} movies")
-
-        users = load_json("users")
-        if users and await db.users.count_documents({}) == 0:
-            for user in users:
-                if "search_count" not in user:
-                    user["search_count"] = 0
-            await db.users.insert_many(users)
-            print(f"✅ Migrated {len(users)} users")
-
-        settings = load_json("settings")
-        if settings and await db.settings.count_documents({}) == 0:
-            await db.settings.insert_many(settings)
-            print(f"✅ Migrated {len(settings)} settings")
-
-        force_channels = load_json("force_channels")
-        if force_channels and await db.force_channels.count_documents({}) == 0:
-            await db.force_channels.insert_many(force_channels)
-            print(f"✅ Migrated {len(force_channels)} force channels")
-
-        auto_delete = load_json("auto_delete")
-        if auto_delete and await db.auto_delete.count_documents({}) == 0:
-            await db.auto_delete.insert_many(auto_delete)
-            print(f"✅ Migrated {len(auto_delete)} auto delete configs")
-
-        custom_texts = load_json("custom_texts")
-        if custom_texts and await db.custom_texts.count_documents({}) == 0:
-            await db.custom_texts.insert_many(custom_texts)
-            print(f"✅ Migrated {len(custom_texts)} custom texts")
-
-        start_buttons = load_json("start_buttons")
-        if start_buttons and await db.start_buttons.count_documents({}) == 0:
-            await db.start_buttons.insert_many(start_buttons)
-            print(f"✅ Migrated {len(start_buttons)} start buttons")
-
-        start_welcome = load_json("start_welcome")
-        if start_welcome and await db.start_welcome.count_documents({}) == 0:
-            await db.start_welcome.insert_many(start_welcome)
-            print(f"✅ Migrated {len(start_welcome)} welcome messages")
-
-        ads = load_json("ads")
-        if ads and await db.ads.count_documents({}) == 0:
-            await db.ads.insert_many(ads)
-            print(f"✅ Migrated {len(ads)} ads")
-
-        print("✅ Migration completed!")
-    except Exception as e:
-        print(f"⚠️ Migration error: {e}")
-
+# ==================== On Startup ====================
 async def on_startup(dp):
-    await migrate_json_to_mongodb()
+    # Ensure all JSON files exist
+    for file in ["movies", "users", "ads", "settings", "force_channels", 
+                 "custom_texts", "auto_delete", "start_buttons", "start_welcome"]:
+        if not os.path.exists(f"{DATA_DIR}/{file}.json"):
+            save_json(file, [])
+    
     await load_movies_cache()
     asyncio.create_task(batch_worker())
-    print("✅ Bot started with MongoDB + All Features")
+    print("✅ Bot started with JSON Storage")
     print(f"✅ Movies in cache: {len(MOVIES_DICT)}")
     print(f"✅ Batch size: {BATCH_SIZE}")
 
