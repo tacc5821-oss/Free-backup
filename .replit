@@ -38,3 +38,4 @@ run = ["python", "bot.py"]
 [userenv.shared]
 BOT_TOKEN = "8403083159:AAHL47FfmS1YBqDAtSMrh8prEJvo5ErdAqo"
 OWNER_ID = "1735522859"
+MONGO_URI = "mongodb://localhost:27017"
