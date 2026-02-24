@@ -1145,9 +1145,9 @@ async def force_done(call: types.CallbackQuery):
     if not ok:
         await call.answer(
             "❌ Channel အားလုံးကို Join မလုပ်ရသေးပါ။\n"
-            "ကျေးဇူးပြု၍ သတ်မှတ်ထားသော Channel များအားလုံးကို အရင် Join လုပ်ပါ။\n"
-            "ပြီးရင် "Done" ကို နှိပ်ပါ။",
-            show_alert=True
+"ကျေးဇူးပြု၍ သတ်မှတ်ထားသော Channel များအားလုံးကို အရင် Join လုပ်ပါ။\n"
+"ပြီးရင် 'Done' ကို နှိပ်ပါ။",
+show_alert=True
         )
         return
 
