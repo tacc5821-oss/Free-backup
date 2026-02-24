@@ -1,0 +1,20 @@
+[
+    {
+        "id": 1,
+        "name": "Anime",
+        "link": "https://t.me/seatvmmanime1",
+        "row": 0
+    },
+    {
+        "id": 2,
+        "name": "Donghua",
+        "link": "https://t.me/seatvmmdonghua",
+        "row": 0
+    },
+    {
+        "id": 3,
+        "name": "Owner",
+        "link": "http://t.me/osamu1123",
+        "row": 1
+    }
+]
