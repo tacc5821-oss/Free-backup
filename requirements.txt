@@ -1,7 +1,6 @@
-# Core
-python-telegram-bot==20.7
-
-# Optional
-python-dotenv==1.0.0  # For .env file
-aiofiles==23.2.1     # For async file operations
-requests==2.31.0     # For HTTP requests
+pyTelegramBotAPI==4.18.0
+python-dotenv==1.0.0
+pymongo==4.9.2
+motor==3.6.0
+aiofiles==23.2.1
+requests==2.31.0
