@@ -3,19 +3,24 @@ import json
 import asyncio
 import re
 from datetime import datetime, timedelta
-from collections import Counter
 from typing import Optional, Dict, List
+import logging
 
-from aiogram import Bot, Dispatcher, executor, types
-from aiogram.contrib.fsm_storage.memory import MemoryStorage
-from aiogram.dispatcher import FSMContext
-from aiogram.dispatcher.filters.state import State, StatesGroup
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton,
     InlineKeyboardMarkup, InlineKeyboardButton,
-    InputFile, ContentType
+    FSInputFile, ContentType, CallbackQuery
 )
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
 
+# ==================== CONFIG ====================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OWNER_ID = int(os.getenv("OWNER_ID"))
 
@@ -23,10 +28,15 @@ COOLDOWN = 90
 BATCH_SIZE = 30
 AUTO_DELETE_OPTIONS = [5, 10, 30]
 
-bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
+# ==================== BOT INIT ====================
+bot = Bot(
+    token=BOT_TOKEN,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+)
 storage = MemoryStorage()
-dp = Dispatcher(bot, storage=storage)
+dp = Dispatcher(storage=storage)
 
+# ==================== GLOBAL VARIABLES ====================
 ACTIVE_USERS = 0
 WAITING_QUEUE = asyncio.Queue()
 BATCH_LOCK = asyncio.Lock()
@@ -49,7 +59,7 @@ def save_json(name, data):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
 
-# ==================== Movies ====================
+# ==================== MOVIES ====================
 async def get_movies():
     return load_json("movies")
 
@@ -85,7 +95,7 @@ async def delete_movie(code):
     save_json("movies", movies)
     await reload_movies_cache()
 
-# ==================== Ads ====================
+# ==================== ADS ====================
 async def get_ads():
     return load_json("ads")
 
@@ -103,7 +113,7 @@ async def delete_ad(aid):
     ads = [a for a in ads if a["id"] != int(aid)]
     save_json("ads", ads)
 
-# ==================== Users ====================
+# ==================== USERS ====================
 async def get_users():
     return load_json("users")
 
@@ -170,7 +180,7 @@ async def get_daily_active_users():
             count += 1
     return count
 
-# ==================== Settings ====================
+# ==================== SETTINGS ====================
 async def get_setting(key):
     settings = load_json("settings")
     for s in settings:
@@ -208,7 +218,7 @@ async def get_next_ad_index():
     await set_setting("last_ad_index", next_idx)
     return current % len(ads)
 
-# ==================== Auto Delete ====================
+# ==================== AUTO DELETE ====================
 async def get_auto_delete_config():
     configs = load_json("auto_delete")
     if not configs:
@@ -231,7 +241,7 @@ async def set_auto_delete_config(config_type, value):
         configs.append({"type": config_type, "seconds": value})
     save_json("auto_delete", configs)
 
-# ==================== Force Channels ====================
+# ==================== FORCE CHANNELS ====================
 async def get_force_channels():
     return load_json("force_channels")
 
@@ -250,7 +260,7 @@ async def delete_force_channel(cid):
     channels = [c for c in channels if c["id"] != int(cid)]
     save_json("force_channels", channels)
 
-# ==================== Custom Texts ====================
+# ==================== CUSTOM TEXTS ====================
 async def get_custom_text(key):
     texts = load_json("custom_texts")
     for t in texts:
@@ -288,7 +298,7 @@ async def set_custom_text(key, text=None, photo_id=None, sticker_id=None, animat
         })
     save_json("custom_texts", texts)
 
-# ==================== Start Welcome ====================
+# ==================== START WELCOME ====================
 async def get_start_welcome():
     welcome = load_json("start_welcome")
     if not welcome:
@@ -339,7 +349,7 @@ async def delete_start_welcome(index):
 async def get_start_welcome_count():
     return len(load_json("start_welcome"))
 
-# ==================== Start Buttons ====================
+# ==================== START BUTTONS ====================
 async def get_start_buttons():
     return load_json("start_buttons")
 
@@ -398,7 +408,7 @@ async def get_start_buttons_by_row():
         rows[row].append(btn)
     return rows
 
-# ==================== Helper Functions ====================
+# ==================== HELPER FUNCTIONS ====================
 def parse_telegram_format(text, user_name="", user_mention=""):
     if not text:
         return text
@@ -415,17 +425,31 @@ def parse_telegram_format(text, user_name="", user_mention=""):
 
     return text
 
-auto_delete_tasks: Dict[str, asyncio.Task] = {}
+# ==================== COLOR BUTTON HELPER (Telegram 2026.2) ====================
+def color_button(text: str, 
+                 callback_data: str = None, 
+                 url: str = None,
+                 color: str = "secondary"):
+    """
+    Telegram 2026.2 Background Color Button
+    အရောင်များ:
+        - "primary"   -> အပြာ
+        - "positive"  -> အစိမ်း  
+        - "danger"    -> အနီ
+        - "secondary" -> မီးခိုး (Default)
+    """
+    data = {"text": text}
+    
+    if url:
+        data["url"] = url
+    if callback_data:
+        data["callback_data"] = callback_data
+    if color != "secondary":
+        data["color"] = color
+        
+    return InlineKeyboardButton(**data)
 
-async def schedule_auto_delete(chat_type: str, chat_id: int, message_id: int, seconds: int):
-    if seconds <= 0:
-        return
-    await asyncio.sleep(seconds)
-    try:
-        await bot.delete_message(chat_id, message_id)
-    except Exception as e:
-        print(f"Failed to delete message: {e}")
-
+# ==================== BATCH WORKER ====================
 async def batch_worker():
     global ACTIVE_USERS
 
@@ -462,6 +486,15 @@ async def process_user_request(user_id: int):
         async with BATCH_LOCK:
             ACTIVE_USERS -= 1
 
+async def schedule_auto_delete(chat_type: str, chat_id: int, message_id: int, seconds: int):
+    if seconds <= 0:
+        return
+    await asyncio.sleep(seconds)
+    try:
+        await bot.delete_message(chat_id, message_id)
+    except Exception as e:
+        print(f"Failed to delete message: {e}")
+
 async def is_maintenance():
     return await get_setting("maint") == "on"
 
@@ -479,26 +512,27 @@ async def check_force_join(user_id):
             return False
     return True
 
-async def send_force_join(msg):
+async def send_force_join(msg: types.Message):
     channels = await get_force_channels()
     if not channels:
         return True
 
-    kb = InlineKeyboardMarkup()
+    builder = InlineKeyboardBuilder()
     for ch in channels:
-        kb.add(InlineKeyboardButton(ch["title"], url=ch["invite"]))
-    kb.add(InlineKeyboardButton("✅ Done ✅", callback_data="force_done"))
+        builder.button(text=ch["title"], url=ch["invite"])
+    builder.button(text="✅ Done ✅", callback_data="force_done")
+    builder.adjust(1)
 
     force_text = await get_custom_text("forcemsg")
     formatted_text = parse_telegram_format(
         force_text.get("text") or "⚠️ **BOTအသုံးပြုခွင့် ကန့်သတ်ထားပါသည်။**\n\nBOT ကိုအသုံးပြု နိုင်ရန်အတွက်အောက်ပါ Channel များကို အရင် Join ပေးထားရပါမည်။",
         msg.from_user.full_name,
-        msg.from_user.get_mention(as_html=True)
+        msg.from_user.mention_html()
     )
 
     force_msg = await msg.answer(
         formatted_text,
-        reply_markup=kb,
+        reply_markup=builder.as_markup(),
         protect_content=True
     )
     return False
@@ -534,21 +568,25 @@ async def safe_delete_message(chat_id: int, message_id: int):
         pass
 
 def main_menu(is_owner=False):
-    kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add(KeyboardButton("🔍 Search Movie"))
-    kb.add(KeyboardButton("📋 Movie List"))
+    kb = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🔍 Search Movie")],
+            [KeyboardButton(text="📋 Movie List")]
+        ],
+        resize_keyboard=True
+    )
     if is_owner:
-        kb.add(KeyboardButton("🛠 Admin Panel"))
-        kb.add(KeyboardButton("📊 Statistics"))
+        kb.keyboard.append([KeyboardButton(text="🛠 Admin Panel")])
+        kb.keyboard.append([KeyboardButton(text="📊 Statistics")])
     return kb
 
-# ==================== Start Command ====================
-@dp.message_handler(commands=["start"])
-async def start(msg: types.Message):
-    is_owner = msg.from_user.id == OWNER_ID
-    user_id = msg.from_user.id
-    display_name = msg.from_user.full_name
-    user_mention = msg.from_user.get_mention(as_html=True)
+# ==================== START COMMAND ====================
+@dp.message(Command("start"))
+async def start(message: types.Message):
+    is_owner = message.from_user.id == OWNER_ID
+    user_id = message.from_user.id
+    display_name = message.from_user.full_name
+    user_mention = message.from_user.mention_html()
 
     is_new = await add_new_user(user_id, display_name, user_mention)
 
@@ -567,422 +605,196 @@ async def start(msg: types.Message):
         except Exception as e:
             print(f"Failed to notify owner: {e}")
 
-    if not await check_force_join(msg.from_user.id):
-        await send_force_join(msg)
+    if not await check_force_join(message.from_user.id):
+        await send_force_join(message)
         return
 
-    await send_start_welcome(msg, is_owner)
+    await send_start_welcome(message, is_owner)
 
-    await msg.answer(
+    await message.answer(
         "📌 **Main Menu**\n\nအောက်ပါခလုတ်များကိုသုံးပါ:",
         reply_markup=main_menu(is_owner),
         protect_content=True
     )
 
-async def send_start_welcome(msg: types.Message, is_owner: bool):
+async def send_start_welcome(message: types.Message, is_owner: bool):
     welcome_data = await get_next_welcome_photo()
 
-    kb = InlineKeyboardMarkup(row_width=2)
+    builder = InlineKeyboardBuilder()
     rows = await get_start_buttons_by_row()
 
     for row_num in sorted(rows.keys()):
         row_buttons = rows[row_num]
-        buttons = []
         for btn in row_buttons[:2]:
             if btn.get("type") == "popup":
-                buttons.append(InlineKeyboardButton(btn["name"], callback_data=btn.get("callback_data", f"popup_{btn['id']}")))
+                builder.button(
+                    text=btn["name"], 
+                    callback_data=btn.get("callback_data", f"popup_{btn['id']}")
+                )
             else:
-                buttons.append(InlineKeyboardButton(btn["name"], url=btn["link"]))
-        if buttons:
-            kb.row(*buttons)
+                builder.button(
+                    text=btn["name"], 
+                    url=btn["link"]
+                )
+        builder.adjust(2)
 
     if is_owner:
-        kb.add(InlineKeyboardButton("⚙️ Manage Start Buttons", callback_data="manage_start_buttons"))
+        builder.button(text="⚙️ Manage Start Buttons", callback_data="manage_start_buttons")
+        builder.adjust(1)
 
     welcome_text = parse_telegram_format(
         welcome_data.get("caption") or welcome_data.get("text", "👋 Welcome!"),
-        msg.from_user.full_name,
-        msg.from_user.get_mention(as_html=True)
+        message.from_user.full_name,
+        message.from_user.mention_html()
     )
 
     if welcome_data and welcome_data.get("photo_id"):
         try:
-            await msg.answer_photo(
+            await message.answer_photo(
                 photo=welcome_data["photo_id"],
                 caption=welcome_text,
-                reply_markup=kb,
+                reply_markup=builder.as_markup(),
                 protect_content=True
             )
         except Exception as e:
             print(f"Error sending welcome photo: {e}")
-            await msg.answer(
+            await message.answer(
                 welcome_text,
-                reply_markup=kb,
+                reply_markup=builder.as_markup(),
                 protect_content=True
             )
     else:
-        await msg.answer(
+        await message.answer(
             welcome_text,
-            reply_markup=kb,
+            reply_markup=builder.as_markup(),
             protect_content=True
         )
 
-# ==================== Start Button Management ====================
-class StartButtonManagement(StatesGroup):
-    waiting_for_name = State()
-    waiting_for_link = State()
-    waiting_for_type = State()
-    waiting_for_popup_text = State()
-    waiting_for_edit_id = State()
-    waiting_for_edit_name = State()
-    waiting_for_edit_link = State()
-    waiting_for_edit_row = State()
+# ==================== FORCE DONE ====================
+@dp.callback_query(F.data == "force_done")
+async def force_done(callback: CallbackQuery):
+    ok = await check_force_join(callback.from_user.id)
 
-@dp.callback_query_handler(lambda c: c.data == "manage_start_buttons")
-async def manage_start_buttons(call: types.CallbackQuery):
-    if call.from_user.id != OWNER_ID:
+    if not ok:
+        await callback.answer(
+            "❌ Channel အားလုံးကို Join မလုပ်ရသေးပါ။\n"
+            "ကျေးဇူးပြု၍ သတ်မှတ်ထားသော Channel များအားလုံးကို အရင် Join လုပ်ပါ။\n"
+            "ပြီးရင် 'Done' ကို နှိပ်ပါ။",
+            show_alert=True
+        )
         return
 
-    buttons = await get_start_buttons()
-    text = "⚙️ **Start Buttons Management**\n\n"
+    await callback.answer("joinပေးတဲ့အတွက်ကျေးဇူးတင်ပါတယ်!", show_alert=True)
+    await callback.message.delete()
+    await send_start_welcome(callback.message, callback.from_user.id == OWNER_ID)
 
-    if not buttons:
-        text += "Buttons မရှိသေးပါ။\n"
-    else:
-        rows = await get_start_buttons_by_row()
-        for row_num in sorted(rows.keys()):
-            text += f"\n🔹 Row {row_num + 1}:\n"
-            for btn in rows[row_num]:
-                btn_type = btn.get("type", "url")
-                text += f"   • ID: {btn['id']} | {btn['name']} ({btn_type})\n"
-
-    kb = InlineKeyboardMarkup(row_width=2)
-    kb.add(
-        InlineKeyboardButton("➕ Add Button", callback_data="add_start_button"),
-        InlineKeyboardButton("✏️ Edit Button", callback_data="edit_start_button")
-    )
-    kb.add(
-        InlineKeyboardButton("🗑 Delete Button", callback_data="delete_start_button"),
-        InlineKeyboardButton("🖼 Manage Welcome", callback_data="manage_start_welcome")
-    )
-    kb.add(InlineKeyboardButton("⬅️ Back", callback_data="back_to_start"))
-
-    await call.message.edit_text(text, reply_markup=kb)
-
-@dp.callback_query_handler(lambda c: c.data == "add_start_button")
-async def add_start_button_start(call: types.CallbackQuery):
-    if call.from_user.id != OWNER_ID:
-        return
-    await StartButtonManagement.waiting_for_name.set()
-    await call.message.answer("🔹 Button နာမည်ထည့်ပါ:", protect_content=True)
-    await call.answer()
-
-@dp.message_handler(state=StartButtonManagement.waiting_for_name)
-async def add_start_button_name(msg: types.Message, state: FSMContext):
-    await state.update_data(name=msg.text)
-    await StartButtonManagement.waiting_for_type.set()
-
-    kb = InlineKeyboardMarkup(row_width=2)
-    kb.add(
-        InlineKeyboardButton("🔗 URL Button", callback_data="btn_type_url"),
-        InlineKeyboardButton("📢 Popup Button", callback_data="btn_type_popup")
-    )
-    await msg.answer("Button အမျိုးအစားရွေးပါ:", reply_markup=kb, protect_content=True)
-
-@dp.callback_query_handler(lambda c: c.data.startswith("btn_type_"), state=StartButtonManagement.waiting_for_type)
-async def add_start_button_type(call: types.CallbackQuery, state: FSMContext):
-    btn_type = call.data.split("_")[2]
-    await state.update_data(button_type=btn_type)
-
-    if btn_type == "url":
-        await StartButtonManagement.waiting_for_link.set()
-        await call.message.answer("🔗 Button Link ထည့်ပါ (https://t.me/... or https://...):", protect_content=True)
-    else:
-        await StartButtonManagement.waiting_for_popup_text.set()
-        await call.message.answer("📝 Popup စာသားထည့်ပါ:", protect_content=True)
-    await call.answer()
-
-@dp.message_handler(state=StartButtonManagement.waiting_for_link)
-async def add_start_button_link(msg: types.Message, state: FSMContext):
-    if not msg.text.startswith(('http://', 'https://')):
-        return await msg.answer("❌ Link မမှန်ပါ။ http:// သို့မဟုတ် https:// နဲ့စပါ။", protect_content=True)
-
-    data = await state.get_data()
-    await add_start_button(data['name'], msg.text, button_type="url")
-    await msg.answer(f"✅ Button '{data['name']}' ထည့်ပြီးပါပြီ။", protect_content=True)
-    await state.finish()
-
-@dp.message_handler(state=StartButtonManagement.waiting_for_popup_text)
-async def add_start_button_popup(msg: types.Message, state: FSMContext):
-    data = await state.get_data()
-    callback_data = f"popup_{msg.text[:20]}"
-    await add_start_button(data['name'], msg.text, button_type="popup", callback_data=callback_data)
-    await msg.answer(f"✅ Popup Button '{data['name']}' ထည့်ပြီးပါပြီ။", protect_content=True)
-    await state.finish()
-
-@dp.callback_query_handler(lambda c: c.data.startswith("popup_"))
-async def handle_popup_button(call: types.CallbackQuery):
+# ==================== POPUP HANDLER ====================
+@dp.callback_query(F.data.startswith("popup_"))
+async def handle_popup_button(callback: CallbackQuery):
     buttons = await get_start_buttons()
     for btn in buttons:
-        if btn.get("callback_data") == call.data:
-            await call.answer(btn.get("link", ""), show_alert=True)
+        if btn.get("callback_data") == callback.data:
+            await callback.answer(btn.get("link", ""), show_alert=True)
             return
-    await call.answer("Popup text not found", show_alert=True)
+    await callback.answer("Popup text not found", show_alert=True)
 
-@dp.callback_query_handler(lambda c: c.data == "delete_start_button")
-async def delete_start_button_list(call: types.CallbackQuery):
-    if call.from_user.id != OWNER_ID:
-        return
-
-    buttons = await get_start_buttons()
-    if not buttons:
-        await call.answer("❌ Button မရှိပါ။", show_alert=True)
-        return
-
-    kb = InlineKeyboardMarkup(row_width=1)
-    for btn in buttons:
-        kb.add(InlineKeyboardButton(
-            f"🗑 {btn['name']} (Row {btn.get('row', 0)+1})",
-            callback_data=f"delstartbtn_{btn['id']}"
-        ))
-    kb.add(InlineKeyboardButton("⬅️ Back", callback_data="manage_start_buttons"))
-
-    await call.message.edit_text("ဖျက်မည့် Button ကိုရွေးပါ:", reply_markup=kb)
-
-@dp.callback_query_handler(lambda c: c.data.startswith("delstartbtn_"))
-async def delete_start_button_confirm(call: types.CallbackQuery):
-    if call.from_user.id != OWNER_ID:
-        return
-
-    btn_id = call.data.split("_")[1]
-    await delete_start_button(btn_id)
-    await call.answer("✅ Button ဖျက်ပြီးပါပြီ။", show_alert=True)
-    await manage_start_buttons(call)
-
-# ==================== Welcome Management ====================
-class StartWelcomeManagement(StatesGroup):
-    waiting_for_photo = State()
-    waiting_for_delete_index = State()
-
-@dp.callback_query_handler(lambda c: c.data == "manage_start_welcome")
-async def manage_start_welcome(call: types.CallbackQuery):
-    if call.from_user.id != OWNER_ID:
-        return
-
-    welcome_list = await get_start_welcome()
-    text = f"🖼 **Start Welcome Management**\n\n"
-    text += f"📸 စုစုပေါင်းပုံ: {len(welcome_list)} ပုံ\n\n"
-
-    for i, w in enumerate(welcome_list):
-        if w.get("photo_id"):
-            text += f"{i+1}. 🖼 Photo - {w.get('caption', 'No caption')[:30]}\n"
-        else:
-            text += f"{i+1}. 📝 Text - {w.get('text', '')[:30]}\n"
-
-    kb = InlineKeyboardMarkup(row_width=2)
-    kb.add(
-        InlineKeyboardButton("➕ Add Photo", callback_data="add_welcome_photo"),
-        InlineKeyboardButton("➕ Add Text", callback_data="add_welcome_text")
+# ==================== SEARCH COMMAND ====================
+@dp.message(F.text == "🔍 Search Movie")
+async def search_movie_prompt(message: types.Message):
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text="🎬 Movie + Code ကြည့်ရန်", 
+        url="https://t.me/seatvmmmovielist"
     )
-    kb.add(
-        InlineKeyboardButton("🗑 Delete", callback_data="delete_welcome_item"),
-        InlineKeyboardButton("⬅️ Back", callback_data="manage_start_buttons")
-    )
-
-    await call.message.edit_text(text, reply_markup=kb)
-
-@dp.callback_query_handler(lambda c: c.data == "add_welcome_photo")
-async def add_welcome_photo_start(call: types.CallbackQuery):
-    if call.from_user.id != OWNER_ID:
-        return
-    await StartWelcomeManagement.waiting_for_photo.set()
-    await call.message.answer(
-        "🖼 Welcome Photo ထည့်ရန် Photo ပို့ပါ။\n"
-        "Caption ပါထည့်ချင်ရင် Photo နဲ့အတူ Caption ရေးပို့ပါ။\n\n"
-        "📝 Formatting:\n"
-        "• **bold text** - စာလုံးမဲအတွက်\n"
-        "• *italic text* - စာလုံးစောင်းအတွက်\n"
-        "• __underline__ - မျဉ်းသားအတွက်\n"
-        "• ~~strikethrough~~ - ကြားမျဉ်းအတွက်\n"
-        "• `code` - Code အတွက်\n"
-        "• {mention} - User mention အတွက်\n"
-        "• {name} - User name အတွက်\n\n"
-        "မထည့်ချင်ရင် /cancel ရိုက်ပါ။",
+    await message.answer(
+        "🔍 <b>ဇာတ်ကား Code ပို့ပေးပါ</b>",
+        reply_markup=builder.as_markup(),
         protect_content=True
     )
-    await call.answer()
 
-@dp.message_handler(state=StartWelcomeManagement.waiting_for_photo, content_types=['photo'])
-async def add_welcome_photo_done(msg: types.Message, state: FSMContext):
-    photo_id = msg.photo[-1].file_id
-    caption = msg.caption or ""
-    await add_start_welcome(photo_id=photo_id, caption=caption, text=caption)
-    count = await get_start_welcome_count()
-    await msg.answer(f"✅ Welcome Photo ထည့်ပြီးပါပြီ။\n📸 စုစုပေါင်းပုံ: {count} ပုံ", protect_content=True)
-    await state.finish()
-
-@dp.callback_query_handler(lambda c: c.data == "add_welcome_text")
-async def add_welcome_text_start(call: types.CallbackQuery):
-    if call.from_user.id != OWNER_ID:
-        return
-    await StartWelcomeManagement.waiting_for_photo.set()
-    await call.message.answer(
-        "📝 Welcome Text ထည့်ရန် စာသားပို့ပါ။\n\n"
-        "📝 Formatting:\n"
-        "• **bold text** - စာလုံးမဲအတွက်\n"
-        "• *italic text* - စာလုံးစောင်းအတွက်\n"
-        "• __underline__ - မျဉ်းသားအတွက်\n"
-        "• {mention} - User mention အတွက်\n"
-        "• {name} - User name အတွက်\n\n"
-        "မထည့်ချင်ရင် /cancel ရိုက်ပါ။",
+# ==================== MOVIE LIST ====================
+@dp.message(F.text == "📋 Movie List")
+async def movie_list_redirect(message: types.Message):
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text="🎬 Movie + Code ကြည့်ရန်", 
+        url="https://t.me/seatvmmmovielist"
+    )
+    await message.answer(
+        "📌 ရှိတဲ့ Code များကြည့်ရန် အောက်ပါ Button ကိုနှိပ်ပါ",
+        reply_markup=builder.as_markup(),
         protect_content=True
     )
-    await call.answer()
 
-@dp.message_handler(state=StartWelcomeManagement.waiting_for_photo, content_types=['text'])
-async def add_welcome_text_done(msg: types.Message, state: FSMContext):
-    if msg.text == '/cancel':
-        await msg.answer("❌ Cancelled", protect_content=True)
-        await state.finish()
+# ==================== ADMIN PANEL ====================
+@dp.message(F.text == "🛠 Admin Panel")
+async def admin_panel(message: types.Message):
+    if message.from_user.id != OWNER_ID:
         return
+    
+    builder = InlineKeyboardBuilder()
+    
+    builder.row(
+        color_button("➕ Add Movie", callback_data="add_movie", color="positive"),
+        color_button("🗑 Delete Movie", callback_data="del_movie", color="danger"),
+        width=2
+    )
+    
+    builder.row(
+        color_button("📢 Broadcast", callback_data="broadcast", color="primary"),
+        color_button("📡 Force Channels", callback_data="force", color="primary"),
+        width=2
+    )
+    
+    builder.row(
+        InlineKeyboardButton(text="📥 Backup", callback_data="backup"),
+        InlineKeyboardButton(text="📤 Restore", callback_data="restore"),
+        width=2
+    )
+    
+    builder.row(
+        InlineKeyboardButton(text="🛑 Maintenance", callback_data="maint"),
+        InlineKeyboardButton(text="📺 Ads Manager", callback_data="ads_manager"),
+        width=2
+    )
+    
+    builder.row(
+        InlineKeyboardButton(text="⏰ Auto Delete", callback_data="auto_delete"),
+        color_button("🗑 Clear All Data", callback_data="clear_all_data", color="danger"),
+        width=2
+    )
+    
+    builder.row(
+        InlineKeyboardButton(text="📝 Welcome Set", callback_data="edit_welcome"),
+        InlineKeyboardButton(text="📢 Force Msg Set", callback_data="edit_forcemsg"),
+        width=2
+    )
+    
+    builder.row(
+        InlineKeyboardButton(text="🔍 Searching Set", callback_data="edit_searching"),
+        InlineKeyboardButton(text="⚙️ Start Buttons", callback_data="manage_start_buttons"),
+        width=2
+    )
+    
+    builder.row(
+        InlineKeyboardButton(text="⬅ Back", callback_data="back"),
+        width=1
+    )
+    
+    await message.answer(
+        "🛠 **Admin Panel**\n\n"
+        "🎨 **Telegram 2026.2 Color Buttons**\n"
+        "• 🔵 အပြာ - Primary\n"
+        "• 🟢 အစိမ်း - Positive\n"
+        "• 🔴 အနီ - Danger",
+        reply_markup=builder.as_markup(),
+        protect_content=True
+    )
 
-    await add_start_welcome(text=msg.text)
-    count = await get_start_welcome_count()
-    await msg.answer(f"✅ Welcome Text ထည့်ပြီးပါပြီ။\n📝 စုစုပေါင်း: {count} ခု", protect_content=True)
-    await state.finish()
-
-@dp.callback_query_handler(lambda c: c.data == "delete_welcome_item")
-async def delete_welcome_item_list(call: types.CallbackQuery):
-    if call.from_user.id != OWNER_ID:
-        return
-
-    welcome_list = await get_start_welcome()
-    if not welcome_list:
-        await call.answer("❌ ဖျက်စရာမရှိပါ။", show_alert=True)
-        return
-
-    kb = InlineKeyboardMarkup(row_width=1)
-    for i, w in enumerate(welcome_list):
-        if w.get("photo_id"):
-            kb.add(InlineKeyboardButton(
-                f"🗑 {i+1}. 🖼 Photo - {w.get('caption', 'No caption')[:20]}",
-                callback_data=f"delwelcome_{i}"
-            ))
-        else:
-            kb.add(InlineKeyboardButton(
-                f"🗑 {i+1}. 📝 Text - {w.get('text', '')[:20]}",
-                callback_data=f"delwelcome_{i}"
-            ))
-    kb.add(InlineKeyboardButton("⬅️ Back", callback_data="manage_start_welcome"))
-
-    await call.message.edit_text("ဖျက်မည့် Welcome Item ကိုရွေးပါ:", reply_markup=kb)
-
-@dp.callback_query_handler(lambda c: c.data.startswith("delwelcome_"))
-async def delete_welcome_item_confirm(call: types.CallbackQuery):
-    if call.from_user.id != OWNER_ID:
-        return
-
-    index = int(call.data.split("_")[1])
-    if await delete_start_welcome(index):
-        await call.answer("✅ ဖျက်ပြီးပါပြီ။", show_alert=True)
-    else:
-        await call.answer("❌ ဖျက်လို့မရပါ။", show_alert=True)
-
-    await manage_start_welcome(call)
-
-# ==================== Admin Menu ====================
-def admin_menu():
-    kb = InlineKeyboardMarkup(row_width=2)
-    kb.add(InlineKeyboardButton("➕ Add Movie", callback_data="add_movie"),
-           InlineKeyboardButton("🗑 Delete Movie", callback_data="del_movie"))
-    kb.add(InlineKeyboardButton("📢 Broadcast", callback_data="broadcast"),
-           InlineKeyboardButton("📡 Force Channels", callback_data="force"))
-    kb.add(InlineKeyboardButton("📥 Backup", callback_data="backup"),
-           InlineKeyboardButton("📤 Restore", callback_data="restore"))
-    kb.add(InlineKeyboardButton("🛑 Maintenance", callback_data="maint"),
-           InlineKeyboardButton("📺 Ads Manager", callback_data="ads_manager"))
-    kb.add(InlineKeyboardButton("⏰ Auto Delete", callback_data="auto_delete"),
-           InlineKeyboardButton("🗑 Clear All Data", callback_data="clear_all_data"))
-    kb.add(InlineKeyboardButton("📝 Welcome Set", callback_data="edit_welcome"))
-    kb.add(InlineKeyboardButton("📢 Force Msg Set", callback_data="edit_forcemsg"))
-    kb.add(InlineKeyboardButton("🔍 Searching Set", callback_data="edit_searching"))
-    kb.add(InlineKeyboardButton("⚙️ Start Buttons", callback_data="manage_start_buttons"))
-    kb.add(InlineKeyboardButton("⬅ Back", callback_data="back"))
-    return kb
-
-# ==================== Ads Management ====================
-class AddAd(StatesGroup):
-    msgid = State()
-    chatid = State()
-
-@dp.callback_query_handler(lambda c: c.data == "ads_manager")
-async def ads_manager(call: types.CallbackQuery):
-    if call.from_user.id != OWNER_ID:
-        return
-
-    ads = await get_ads()
-    text = "📺 Ads Manager:\n\n"
-    if not ads:
-        text += "No ads added yet."
-    else:
-        for a in ads:
-            text += f"ID: {a['id']} | MsgID: {a['message_id']} | ChatID: {a['storage_chat_id']}\n"
-
-    kb = InlineKeyboardMarkup(row_width=2)
-    kb.add(InlineKeyboardButton("➕ Add Ad", callback_data="add_ad"))
-    for a in ads:
-        kb.add(InlineKeyboardButton(f"🗑 Delete Ad {a['id']}", callback_data=f"delad_{a['id']}"))
-    kb.add(InlineKeyboardButton("⬅ Back", callback_data="back_admin"))
-
-    await call.message.edit_text(text, reply_markup=kb)
-
-@dp.callback_query_handler(lambda c: c.data == "add_ad")
-async def add_ad_start(call: types.CallbackQuery):
-    if call.from_user.id != OWNER_ID:
-        return
-    await AddAd.msgid.set()
-    await call.message.answer("Enter Ad Message ID:", protect_content=True)
-    await call.answer()
-
-@dp.message_handler(state=AddAd.msgid)
-async def add_ad_msgid(msg: types.Message, state: FSMContext):
-    if not msg.text.isdigit():
-        return await msg.answer("Please enter a numeric Message ID.", protect_content=True)
-    await state.update_data(msgid=int(msg.text))
-    await AddAd.chatid.set()
-    await msg.answer("Enter Storage Group Chat ID for this Ad:", protect_content=True)
-
-@dp.message_handler(state=AddAd.chatid)
-async def add_ad_chatid(msg: types.Message, state: FSMContext):
-    try:
-        chatid = int(msg.text)
-    except:
-        return await msg.answer("Invalid Chat ID.", protect_content=True)
-
-    data = await state.get_data()
-    await add_ad(data["msgid"], chatid)
-    await msg.answer("✅ Ad added successfully!", protect_content=True)
-    await state.finish()
-
-@dp.callback_query_handler(lambda c: c.data.startswith("delad_"))
-async def del_ad_process(call: types.CallbackQuery):
-    if call.from_user.id != OWNER_ID:
-        return
-    aid = call.data.split("_")[1]
-    await delete_ad(aid)
-    await call.answer("✅ Ad deleted", show_alert=True)
-    await ads_manager(call)
-
-# ==================== Admin Panel ====================
-@dp.message_handler(lambda m: m.text == "🛠 Admin Panel")
-async def admin_panel(msg: types.Message):
-    if msg.from_user.id != OWNER_ID:
-        return
-    await msg.answer("🛠 Admin Panel", reply_markup=admin_menu(), protect_content=True)
-
-@dp.message_handler(lambda m: m.text == "📊 Statistics")
-async def statistics_panel(msg: types.Message):
-    if msg.from_user.id != OWNER_ID:
+# ==================== STATISTICS ====================
+@dp.message(F.text == "📊 Statistics")
+async def statistics_panel(message: types.Message):
+    if message.from_user.id != OWNER_ID:
         return
 
     total_users = await get_user_count()
@@ -1001,28 +813,191 @@ async def statistics_panel(msg: types.Message):
         count = user.get("search_count", 0)
         text += f"{i}. {name} - {count} searches\n"
 
-    await msg.answer(text, protect_content=True)
+    await message.answer(text, protect_content=True)
 
-# ==================== Navigation ====================
-@dp.callback_query_handler(lambda c: c.data == "back")
-async def back(call: types.CallbackQuery):
-    await call.message.delete()
-    await call.message.answer("Menu:", reply_markup=main_menu(call.from_user.id == OWNER_ID), protect_content=True)
-    await call.answer()
+# ==================== MAIN SEARCH FUNCTION ====================
+@dp.message()
+async def search(message: types.Message):
+    if message.text.startswith("/"):
+        return
 
-@dp.callback_query_handler(lambda c: c.data == "back_to_start")
-async def back_to_start(call: types.CallbackQuery):
-    await call.message.delete()
-    await send_start_welcome(call.message, call.from_user.id == OWNER_ID)
+    if await is_maintenance() and message.from_user.id != OWNER_ID:
+        await message.answer("🛠 Bot ပြုပြင်နေပါသဖြင့် ခေတ္တပိတ်ထားပါသည်။", protect_content=True)
+        return
 
-@dp.callback_query_handler(lambda c: c.data == "back_admin")
-async def back_admin(call: types.CallbackQuery):
-    await call.message.edit_text("🛠 Admin Panel", reply_markup=admin_menu())
+    if not await check_force_join(message.from_user.id):
+        await send_force_join(message)
+        return
 
-# ==================== Auto Delete ====================
-@dp.callback_query_handler(lambda c: c.data == "auto_delete")
-async def auto_delete_menu(call: types.CallbackQuery):
-    if call.from_user.id != OWNER_ID:
+    if message.from_user.id != OWNER_ID:
+        last = await get_user_last(message.from_user.id)
+        if last:
+            diff = datetime.now() - datetime.fromisoformat(last)
+            if diff.total_seconds() < COOLDOWN:
+                remain = int(COOLDOWN - diff.total_seconds())
+                await message.answer(f"⏳ ခေတ္တစောင့်ပေးပါ {remain} စက္ကန့်", protect_content=True)
+                return
+
+    code = message.text.strip().upper()
+    movie = find_movie_by_code(code)
+
+    if not movie:
+        await message.answer(f"❌ Code `{code}` မရှိပါ။\n\n🔍 Search Movie နှိပ်ပြီး Code စစ်ပါ။", protect_content=True)
+        return
+
+    global ACTIVE_USERS
+
+    async with BATCH_LOCK:
+        if ACTIVE_USERS >= BATCH_SIZE:
+            await WAITING_QUEUE.put(message.from_user.id)
+            position = WAITING_QUEUE.qsize()
+
+            queue_msg = await message.answer(
+                f"⏳ **စောင့်ဆိုင်းနေဆဲအသုံးပြုသူများ**\n\n"
+                f"• သင့်နေရာ: **{position}**\n"
+                f"• လက်ရှိအသုံးပြုနေသူ: **{ACTIVE_USERS}/{BATCH_SIZE}**\n\n"
+                f"ကျေးဇူးပြု၍ စောင့်ဆိုင်းပေးပါ။",
+                protect_content=True
+            )
+
+            await asyncio.sleep(5)
+            await safe_delete_message(message.chat.id, queue_msg.message_id)
+            return
+
+        ACTIVE_USERS += 1
+
+    try:
+        await update_user_search(message.from_user.id)
+        USER_PROCESSING_TIME[message.from_user.id] = datetime.now()
+
+        ads = await get_ads()
+        if ads:
+            idx = await get_next_ad_index()
+            if idx is not None and idx < len(ads):
+                ad = ads[idx]
+                try:
+                    ad_sent = await bot.copy_message(
+                        chat_id=message.from_user.id,
+                        from_chat_id=ad["storage_chat_id"],
+                        message_id=ad["message_id"],
+                        protect_content=True
+                    )
+                    asyncio.create_task(schedule_auto_delete("dm", message.from_user.id, ad_sent.message_id, 10))
+                    await asyncio.sleep(10)
+                except Exception as e:
+                    print(f"Error sending ad: {e}")
+
+        searching_msg_id = await send_searching_overlay(message.from_user.id)
+
+        owner_button = color_button(
+            text="⚜️Owner⚜️",
+            url="https://t.me/osamu1123",
+            color="primary"
+        )
+        
+        sent = await bot.copy_message(
+            chat_id=message.from_user.id,
+            from_chat_id=movie["storage_chat_id"],
+            message_id=movie["message_id"],
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[owner_button]]),
+            protect_content=True
+        )
+
+        if searching_msg_id:
+            await safe_delete_message(message.from_user.id, searching_msg_id)
+
+        config = await get_auto_delete_config()
+        dm_sec = next((c["seconds"] for c in config if c["type"] == "dm"), 0)
+        if dm_sec > 0:
+            asyncio.create_task(schedule_auto_delete("dm", message.from_user.id, sent.message_id, dm_sec))
+
+    except Exception as e:
+        print(f"Error sending movie: {e}")
+        await message.answer("❌ Error sending movie. Please try again.", protect_content=True)
+    finally:
+        async with BATCH_LOCK:
+            ACTIVE_USERS -= 1
+
+# ==================== BACK ====================
+@dp.callback_query(F.data == "back")
+async def back(callback: CallbackQuery):
+    await callback.message.delete()
+    await callback.message.answer(
+        "Menu:",
+        reply_markup=main_menu(callback.from_user.id == OWNER_ID),
+        protect_content=True
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data == "back_to_start")
+async def back_to_start(callback: CallbackQuery):
+    await callback.message.delete()
+    await send_start_welcome(callback.message, callback.from_user.id == OWNER_ID)
+
+@dp.callback_query(F.data == "back_admin")
+async def back_admin(callback: CallbackQuery):
+    builder = InlineKeyboardBuilder()
+    
+    builder.row(
+        color_button("➕ Add Movie", callback_data="add_movie", color="positive"),
+        color_button("🗑 Delete Movie", callback_data="del_movie", color="danger"),
+        width=2
+    )
+    
+    builder.row(
+        color_button("📢 Broadcast", callback_data="broadcast", color="primary"),
+        color_button("📡 Force Channels", callback_data="force", color="primary"),
+        width=2
+    )
+    
+    builder.row(
+        InlineKeyboardButton(text="📥 Backup", callback_data="backup"),
+        InlineKeyboardButton(text="📤 Restore", callback_data="restore"),
+        width=2
+    )
+    
+    builder.row(
+        InlineKeyboardButton(text="🛑 Maintenance", callback_data="maint"),
+        InlineKeyboardButton(text="📺 Ads Manager", callback_data="ads_manager"),
+        width=2
+    )
+    
+    builder.row(
+        InlineKeyboardButton(text="⏰ Auto Delete", callback_data="auto_delete"),
+        color_button("🗑 Clear All Data", callback_data="clear_all_data", color="danger"),
+        width=2
+    )
+    
+    builder.row(
+        InlineKeyboardButton(text="📝 Welcome Set", callback_data="edit_welcome"),
+        InlineKeyboardButton(text="📢 Force Msg Set", callback_data="edit_forcemsg"),
+        width=2
+    )
+    
+    builder.row(
+        InlineKeyboardButton(text="🔍 Searching Set", callback_data="edit_searching"),
+        InlineKeyboardButton(text="⚙️ Start Buttons", callback_data="manage_start_buttons"),
+        width=2
+    )
+    
+    builder.row(
+        InlineKeyboardButton(text="⬅ Back", callback_data="back"),
+        width=1
+    )
+    
+    await callback.message.edit_text(
+        "🛠 **Admin Panel**\n\n"
+        "🎨 **Telegram 2026.2 Color Buttons**\n"
+        "• 🔵 အပြာ - Primary\n"
+        "• 🟢 အစိမ်း - Positive\n"
+        "• 🔴 အနီ - Danger",
+        reply_markup=builder.as_markup()
+    )
+
+# ==================== AUTO DELETE ====================
+@dp.callback_query(F.data == "auto_delete")
+async def auto_delete_menu(callback: CallbackQuery):
+    if callback.from_user.id != OWNER_ID:
         return
 
     config = await get_auto_delete_config()
@@ -1034,64 +1009,79 @@ async def auto_delete_menu(call: types.CallbackQuery):
     text += f"DM Messages: {dm_sec} seconds\n\n"
     text += "Select option to change:"
 
-    kb = InlineKeyboardMarkup(row_width=2)
-    kb.add(InlineKeyboardButton("👥 Group", callback_data="set_group_delete"),
-           InlineKeyboardButton("💬 DM", callback_data="set_dm_delete"))
-    kb.add(InlineKeyboardButton("❌ Disable All", callback_data="disable_auto_delete"))
-    kb.add(InlineKeyboardButton("⬅ Back", callback_data="back_admin"))
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="👥 Group", callback_data="set_group_delete"),
+        InlineKeyboardButton(text="💬 DM", callback_data="set_dm_delete"),
+        width=2
+    )
+    builder.row(
+        InlineKeyboardButton(text="❌ Disable All", callback_data="disable_auto_delete"),
+        width=1
+    )
+    builder.row(
+        InlineKeyboardButton(text="⬅ Back", callback_data="back_admin"),
+        width=1
+    )
 
-    await call.message.edit_text(text, reply_markup=kb)
+    await callback.message.edit_text(text, reply_markup=builder.as_markup())
 
-@dp.callback_query_handler(lambda c: c.data.startswith("set_") and "delete" in c.data)
-async def set_auto_delete_type(call: types.CallbackQuery):
-    delete_type = "group" if "group" in call.data else "dm"
+@dp.callback_query(F.data.startswith("set_") & F.data.contains("delete"))
+async def set_auto_delete_type(callback: CallbackQuery):
+    delete_type = "group" if "group" in callback.data else "dm"
 
-    kb = InlineKeyboardMarkup(row_width=3)
+    builder = InlineKeyboardBuilder()
     for sec in AUTO_DELETE_OPTIONS:
-        kb.insert(InlineKeyboardButton(f"{sec}s", callback_data=f"set_time_{delete_type}_{sec}"))
-    kb.add(InlineKeyboardButton("❌ Disable", callback_data=f"set_time_{delete_type}_0"))
-    kb.add(InlineKeyboardButton("⬅ Back", callback_data="auto_delete"))
+        builder.button(text=f"{sec}s", callback_data=f"set_time_{delete_type}_{sec}")
+    builder.button(text="❌ Disable", callback_data=f"set_time_{delete_type}_0")
+    builder.button(text="⬅ Back", callback_data="auto_delete")
+    builder.adjust(3)
 
-    await call.message.edit_text(f"Select auto-delete time for {delete_type.upper()}:", reply_markup=kb)
+    await callback.message.edit_text(f"Select auto-delete time for {delete_type.upper()}:", reply_markup=builder.as_markup())
 
-@dp.callback_query_handler(lambda c: c.data.startswith("set_time_"))
-async def confirm_auto_delete(call: types.CallbackQuery):
-    parts = call.data.split("_")
+@dp.callback_query(F.data.startswith("set_time_"))
+async def confirm_auto_delete(callback: CallbackQuery):
+    parts = callback.data.split("_")
     delete_type = parts[2]
     seconds = int(parts[3])
 
     await set_auto_delete_config(delete_type, seconds)
 
     if seconds > 0:
-        await call.answer(f"{delete_type.upper()} auto-delete set to {seconds} seconds!", show_alert=True)
+        await callback.answer(f"{delete_type.upper()} auto-delete set to {seconds} seconds!", show_alert=True)
     else:
-        await call.answer(f"{delete_type.upper()} auto-delete disabled!", show_alert=True)
+        await callback.answer(f"{delete_type.upper()} auto-delete disabled!", show_alert=True)
 
-    await auto_delete_menu(call)
+    await auto_delete_menu(callback)
 
-@dp.callback_query_handler(lambda c: c.data == "disable_auto_delete")
-async def disable_all_auto_delete(call: types.CallbackQuery):
+@dp.callback_query(F.data == "disable_auto_delete")
+async def disable_all_auto_delete(callback: CallbackQuery):
     await set_auto_delete_config("group", 0)
     await set_auto_delete_config("dm", 0)
-    await call.answer("All auto-delete disabled!", show_alert=True)
-    await auto_delete_menu(call)
+    await callback.answer("All auto-delete disabled!", show_alert=True)
+    await auto_delete_menu(callback)
 
-# ==================== Clear All Data ====================
-@dp.callback_query_handler(lambda c: c.data == "clear_all_data")
-async def clear_all_data_confirm(call: types.CallbackQuery):
-    if call.from_user.id != OWNER_ID:
+# ==================== CLEAR ALL DATA ====================
+@dp.callback_query(F.data == "clear_all_data")
+async def clear_all_data_confirm(callback: CallbackQuery):
+    if callback.from_user.id != OWNER_ID:
         return
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("✅ Confirm Clear All", callback_data="confirm_clear_all"))
-    kb.add(InlineKeyboardButton("⬅ Back", callback_data="back_admin"))
-    await call.message.edit_text("⚠️ <b>Are you sure you want to delete ALL data?</b>\nThis includes movies, users, ads, and settings.", reply_markup=kb)
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="✅ Confirm Clear All", callback_data="confirm_clear_all"),
+        width=1
+    )
+    builder.row(
+        InlineKeyboardButton(text="⬅ Back", callback_data="back_admin"),
+        width=1
+    )
+    await callback.message.edit_text("⚠️ <b>Are you sure you want to delete ALL data?</b>\nThis includes movies, users, ads, and settings.", reply_markup=builder.as_markup())
 
-@dp.callback_query_handler(lambda c: c.data == "confirm_clear_all")
-async def process_clear_all_data(call: types.CallbackQuery):
-    if call.from_user.id != OWNER_ID:
+@dp.callback_query(F.data == "confirm_clear_all")
+async def process_clear_all_data(callback: CallbackQuery):
+    if callback.from_user.id != OWNER_ID:
         return
 
-    # Clear all JSON files
     save_json("movies", [])
     save_json("users", [])
     save_json("ads", [])
@@ -1104,13 +1094,61 @@ async def process_clear_all_data(call: types.CallbackQuery):
 
     await reload_movies_cache()
 
-    await call.message.edit_text("✅ All data has been cleared!", reply_markup=admin_menu())
-    await call.answer("Data cleared", show_alert=True)
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        color_button("➕ Add Movie", callback_data="add_movie", color="positive"),
+        color_button("🗑 Delete Movie", callback_data="del_movie", color="danger"),
+        width=2
+    )
+    
+    builder.row(
+        color_button("📢 Broadcast", callback_data="broadcast", color="primary"),
+        color_button("📡 Force Channels", callback_data="force", color="primary"),
+        width=2
+    )
+    
+    builder.row(
+        InlineKeyboardButton(text="📥 Backup", callback_data="backup"),
+        InlineKeyboardButton(text="📤 Restore", callback_data="restore"),
+        width=2
+    )
+    
+    builder.row(
+        InlineKeyboardButton(text="🛑 Maintenance", callback_data="maint"),
+        InlineKeyboardButton(text="📺 Ads Manager", callback_data="ads_manager"),
+        width=2
+    )
+    
+    builder.row(
+        InlineKeyboardButton(text="⏰ Auto Delete", callback_data="auto_delete"),
+        color_button("🗑 Clear All Data", callback_data="clear_all_data", color="danger"),
+        width=2
+    )
+    
+    builder.row(
+        InlineKeyboardButton(text="📝 Welcome Set", callback_data="edit_welcome"),
+        InlineKeyboardButton(text="📢 Force Msg Set", callback_data="edit_forcemsg"),
+        width=2
+    )
+    
+    builder.row(
+        InlineKeyboardButton(text="🔍 Searching Set", callback_data="edit_searching"),
+        InlineKeyboardButton(text="⚙️ Start Buttons", callback_data="manage_start_buttons"),
+        width=2
+    )
+    
+    builder.row(
+        InlineKeyboardButton(text="⬅ Back", callback_data="back"),
+        width=1
+    )
+    
+    await callback.message.edit_text("✅ All data has been cleared!\n\n🛠 **Admin Panel**", reply_markup=builder.as_markup())
+    await callback.answer("Data cleared", show_alert=True)
 
-# ==================== Force Channels ====================
-@dp.callback_query_handler(lambda c: c.data == "force")
-async def force(call: types.CallbackQuery):
-    if call.from_user.id != OWNER_ID:
+# ==================== FORCE CHANNELS ====================
+@dp.callback_query(F.data == "force")
+async def force_menu(callback: CallbackQuery):
+    if callback.from_user.id != OWNER_ID:
         return
 
     channels = await get_force_channels()
@@ -1122,33 +1160,43 @@ async def force(call: types.CallbackQuery):
         for ch in channels:
             text += f"{ch['id']}. {ch['title']} ({ch['chat_id']})\n"
 
-    kb = InlineKeyboardMarkup(row_width=1)
+    builder = InlineKeyboardBuilder()
 
     for ch in channels:
-        kb.add(InlineKeyboardButton(f"❌ {ch['title']}", callback_data=f"delch_{ch['id']}"))
+        builder.row(
+            InlineKeyboardButton(text=f"❌ {ch['title']}", callback_data=f"delch_{ch['id']}"),
+            width=1
+        )
 
-    kb.add(InlineKeyboardButton("➕ Add Channel", callback_data="add_force"))
-    kb.add(InlineKeyboardButton("⬅ Back", callback_data="back_admin"))
+    builder.row(
+        InlineKeyboardButton(text="➕ Add Channel", callback_data="add_force"),
+        width=1
+    )
+    builder.row(
+        InlineKeyboardButton(text="⬅ Back", callback_data="back_admin"),
+        width=1
+    )
 
-    await call.message.edit_text(text, reply_markup=kb)
+    await callback.message.edit_text(text, reply_markup=builder.as_markup())
 
-@dp.callback_query_handler(lambda c: c.data == "add_force")
-async def add_force(call: types.CallbackQuery):
-    if call.from_user.id != OWNER_ID:
+@dp.callback_query(F.data == "add_force")
+async def add_force_start(callback: CallbackQuery):
+    if callback.from_user.id != OWNER_ID:
         return
 
-    await call.message.answer(
+    await callback.message.answer(
         "📌 Channel link ပေးပါ (public/private OK)\n\n"
         "Example:\nhttps://t.me/yourchannel\nhttps://t.me/+AbCdEfGhIjKlMn==",
         protect_content=True
     )
+    await callback.answer()
 
-@dp.message_handler(lambda m: m.text and m.text.startswith("https://t.me/"))
-async def catch_force_link(msg: types.Message):
-    if msg.from_user.id != OWNER_ID:
+@dp.message(lambda m: m.text and m.text.startswith("https://t.me/"))
+async def catch_force_link(message: types.Message):
+    if message.from_user.id != OWNER_ID:
         return
 
-    link = msg.text.strip()
+    link = message.text.strip()
     chat_id = None
     chat = None
 
@@ -1158,20 +1206,24 @@ async def catch_force_link(msg: types.Message):
             chat = await bot.get_chat(f"@{username}")
             chat_id = chat.id
         except:
-            return await msg.answer("❌ Public channel not found", protect_content=True)
+            await message.answer("❌ Public channel not found", protect_content=True)
+            return
     else:
         try:
             chat = await bot.get_chat(link)
             chat_id = chat.id
         except:
-            return await msg.answer("❌ Private channel invalid", protect_content=True)
+            await message.answer("❌ Private channel invalid", protect_content=True)
+            return
 
     try:
         bot_member = await bot.get_chat_member(chat_id, (await bot.get_me()).id)
         if bot_member.status not in ("administrator", "creator"):
-            return await msg.answer("❌ Bot must be admin in channel", protect_content=True)
+            await message.answer("❌ Bot must be admin in channel", protect_content=True)
+            return
     except:
-        return await msg.answer("❌ Cannot check admin status", protect_content=True)
+        await message.answer("❌ Cannot check admin status", protect_content=True)
+        return
 
     try:
         invite = await bot.export_chat_invite_link(chat_id)
@@ -1179,53 +1231,34 @@ async def catch_force_link(msg: types.Message):
         if chat.username:
             invite = f"https://t.me/{chat.username}"
         else:
-            return await msg.answer("❌ Cannot create invite link", protect_content=True)
+            await message.answer("❌ Cannot create invite link", protect_content=True)
+            return
 
     await add_force_channel(chat_id, chat.title, invite)
 
-    await msg.answer(f"✅ Added: {chat.title}", protect_content=True)
+    await message.answer(f"✅ Added: {chat.title}", protect_content=True)
 
-@dp.callback_query_handler(lambda c: c.data.startswith("delch_"))
-async def delch(call: types.CallbackQuery):
-    if call.from_user.id != OWNER_ID:
+@dp.callback_query(F.data.startswith("delch_"))
+async def delete_force_channel_handler(callback: CallbackQuery):
+    if callback.from_user.id != OWNER_ID:
         return
 
-    cid = call.data.split("_")[1]
+    cid = callback.data.split("_")[1]
     await delete_force_channel(cid)
-    await call.answer("✅ Deleted", show_alert=True)
+    await callback.answer("✅ Deleted", show_alert=True)
+    await force_menu(callback)
 
-    await force(call)
-
-# ==================== Force Done ====================
-@dp.callback_query_handler(lambda c: c.data == "force_done")
-async def force_done(call: types.CallbackQuery):
-    ok = await check_force_join(call.from_user.id)
-
-    if not ok:
-        await call.answer(
-            "❌ Channel အားလုံးကို Join မလုပ်ရသေးပါ။\n"
-            "ကျေးဇူးပြု၍ သတ်မှတ်ထားသော Channel များအားလုံးကို အရင် Join လုပ်ပါ။\n"
-            "ပြီးရင် 'Done' ကို နှိပ်ပါ။",
-            show_alert=True
-        )
-        return
-
-    await call.answer("joinပေးတဲ့အတွက်ကျေးဇူးတင်ပါတယ်!", show_alert=True)
-    await call.message.delete()
-    await send_start_welcome(call.message, call.from_user.id == OWNER_ID)
-
-# ==================== Edit Text ====================
+# ==================== EDIT TEXT ====================
 class EditText(StatesGroup):
     waiting = State()
 
-@dp.callback_query_handler(lambda c: c.data.startswith("edit_"))
-async def edit_text_start(call: types.CallbackQuery):
-    if call.from_user.id != OWNER_ID:
+@dp.callback_query(F.data.startswith("edit_"))
+async def edit_text_start(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id != OWNER_ID:
         return
 
-    key = call.data.replace("edit_", "")
-    await EditText.waiting.set()
-    state = dp.current_state(user=call.from_user.id)
+    key = callback.data.replace("edit_", "")
+    await state.set_state(EditText.waiting)
     await state.update_data(key=key)
 
     formatting_guide = (
@@ -1240,7 +1273,7 @@ async def edit_text_start(call: types.CallbackQuery):
     )
 
     if key == "searching":
-        await call.message.answer(
+        await callback.message.answer(
             "🔍 Searching overlay အတွက် content ပို့ပေးပါ:\n\n"
             "• Text message ပို့ရင် - စာသားအဖြစ်သိမ်းမယ်\n"
             "• Photo ပို့ရင် - Photo နဲ့ caption သိမ်းမယ်\n"
@@ -1251,149 +1284,132 @@ async def edit_text_start(call: types.CallbackQuery):
             protect_content=True
         )
     else:
-        await call.message.answer(
+        await callback.message.answer(
             f"'{key}' အတွက် စာအသစ်ပို့ပေးပါ (Photo ပါရင် Photo နဲ့အတူ Caption ထည့်ပေးပါ)" +
             formatting_guide,
             protect_content=True
         )
 
-    await call.answer()
+    await callback.answer()
 
-@dp.message_handler(state=EditText.waiting, content_types=types.ContentTypes.ANY)
-async def edit_text_done(msg: types.Message, state: FSMContext):
+@dp.message(EditText.waiting)
+async def edit_text_done(message: types.Message, state: FSMContext):
     data = await state.get_data()
     key = data['key']
 
-    if msg.content_type == 'text' and msg.text == '/cancel':
-        await msg.answer("❌ Cancelled", protect_content=True)
-        await state.finish()
+    if message.content_type == 'text' and message.text == '/cancel':
+        await message.answer("❌ Cancelled", protect_content=True)
+        await state.clear()
         return
 
-    if msg.content_type == 'text':
-        await set_custom_text(key, text=msg.text)
-        await msg.answer(f"✅ {key} text updated successfully", protect_content=True)
+    if message.content_type == 'text':
+        await set_custom_text(key, text=message.text)
+        await message.answer(f"✅ {key} text updated successfully", protect_content=True)
 
-    elif msg.content_type == 'photo':
-        photo_id = msg.photo[-1].file_id
-        caption = msg.caption or ""
+    elif message.content_type == 'photo':
+        photo_id = message.photo[-1].file_id
+        caption = message.caption or ""
         await set_custom_text(key, text=caption, photo_id=photo_id)
-        await msg.answer(f"✅ {key} photo updated successfully", protect_content=True)
+        await message.answer(f"✅ {key} photo updated successfully", protect_content=True)
 
-    elif msg.content_type == 'sticker':
-        sticker_id = msg.sticker.file_id
+    elif message.content_type == 'sticker':
+        sticker_id = message.sticker.file_id
         await set_custom_text(key, sticker_id=sticker_id)
-        await msg.answer(f"✅ {key} sticker updated successfully", protect_content=True)
+        await message.answer(f"✅ {key} sticker updated successfully", protect_content=True)
 
-    elif msg.content_type == 'animation':
-        animation_id = msg.animation.file_id
-        caption = msg.caption or ""
+    elif message.content_type == 'animation':
+        animation_id = message.animation.file_id
+        caption = message.caption or ""
         await set_custom_text(key, text=caption, animation_id=animation_id)
-        await msg.answer(f"✅ {key} GIF updated successfully", protect_content=True)
+        await message.answer(f"✅ {key} GIF updated successfully", protect_content=True)
 
     else:
-        await msg.answer("❌ Unsupported content type", protect_content=True)
+        await message.answer("❌ Unsupported content type", protect_content=True)
 
-    await state.finish()
+    await state.clear()
 
-# ==================== Movie List ====================
-@dp.message_handler(lambda m: m.text == "📋 Movie List")
-async def movie_list_redirect(msg: types.Message):
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("🎬 Movie + Code ကြည့်ရန်", url="https://t.me/seatvmmmovielist"))
-    await msg.answer("📌 ရှိတဲ့ Code များကြည့်ရန် အောက်ပါ Button ကိုနှိပ်ပါ", reply_markup=kb, protect_content=True)
-
-# ==================== Maintenance ====================
-@dp.callback_query_handler(lambda c: c.data == "maint")
-async def maint(call: types.CallbackQuery):
-    if call.from_user.id != OWNER_ID:
-        return
-    current = await is_maintenance()
-    new = "off" if current else "on"
-    await set_setting("maint", new)
-    await call.answer(f"Maintenance: {new.upper()}", show_alert=True)
-
-# ==================== Add Movie ====================
+# ==================== ADD MOVIE ====================
 class AddMovie(StatesGroup):
     name = State()
     code = State()
     msgid = State()
     chatid = State()
 
-@dp.callback_query_handler(lambda c: c.data == "add_movie")
-async def add_movie(call: types.CallbackQuery):
-    if call.from_user.id != OWNER_ID:
+@dp.callback_query(F.data == "add_movie")
+async def add_movie_start(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id != OWNER_ID:
         return
-    await AddMovie.name.set()
-    await call.message.answer("🎬 ဇာတ်ကားနာမည်?", protect_content=True)
-    await call.answer()
+    await state.set_state(AddMovie.name)
+    await callback.message.answer("🎬 ဇာတ်ကားနာမည်?", protect_content=True)
+    await callback.answer()
 
-@dp.message_handler(state=AddMovie.name)
-async def add_movie_name(msg: types.Message, state: FSMContext):
-    await state.update_data(name=msg.text)
-    await AddMovie.code.set()
-    await msg.answer("🔢 ဇာတ်ကား Code (ဥပမာ: 101010, MM101, etc):", protect_content=True)
+@dp.message(AddMovie.name)
+async def add_movie_name(message: types.Message, state: FSMContext):
+    await state.update_data(name=message.text)
+    await state.set_state(AddMovie.code)
+    await message.answer("🔢 ဇာတ်ကား Code (ဥပမာ: 101010, MM101, etc):", protect_content=True)
 
-@dp.message_handler(state=AddMovie.code)
-async def add_movie_code(msg: types.Message, state: FSMContext):
-    code = msg.text.strip().upper()
+@dp.message(AddMovie.code)
+async def add_movie_code(message: types.Message, state: FSMContext):
+    code = message.text.strip().upper()
     if not code:
-        return await msg.answer("❌ Code ထည့်ပါ။", protect_content=True)
+        return await message.answer("❌ Code ထည့်ပါ။", protect_content=True)
     await state.update_data(code=code)
-    await AddMovie.msgid.set()
-    await msg.answer("📨 Message ID?", protect_content=True)
+    await state.set_state(AddMovie.msgid)
+    await message.answer("📨 Message ID?", protect_content=True)
 
-@dp.message_handler(state=AddMovie.msgid)
-async def add_movie_msgid(msg: types.Message, state: FSMContext):
-    if not msg.text.isdigit():
-        return await msg.answer("❌ ဂဏန်းပဲထည့်ပါ။", protect_content=True)
-    await state.update_data(msgid=int(msg.text))
-    await AddMovie.chatid.set()
-    await msg.answer("💬 Storage Group Chat ID?", protect_content=True)
+@dp.message(AddMovie.msgid)
+async def add_movie_msgid(message: types.Message, state: FSMContext):
+    if not message.text.isdigit():
+        return await message.answer("❌ ဂဏန်းပဲထည့်ပါ။", protect_content=True)
+    await state.update_data(msgid=int(message.text))
+    await state.set_state(AddMovie.chatid)
+    await message.answer("💬 Storage Group Chat ID?", protect_content=True)
 
-@dp.message_handler(state=AddMovie.chatid)
-async def add_movie_chatid(msg: types.Message, state: FSMContext):
+@dp.message(AddMovie.chatid)
+async def add_movie_chatid(message: types.Message, state: FSMContext):
     try:
-        chatid = int(msg.text)
+        chatid = int(message.text)
     except:
-        return await msg.answer("❌ Chat ID မမှန်ပါ။", protect_content=True)
+        return await message.answer("❌ Chat ID မမှန်ပါ။", protect_content=True)
 
     data = await state.get_data()
     await add_movie_record(data["name"], data["code"], data["msgid"], chatid)
 
-    await msg.answer(f"✅ ဇာတ်ကားထည့်ပြီးပါပြီ!\n\nနာမည်: {data['name']}\nCode: {data['code']}", protect_content=True)
-    await state.finish()
+    await message.answer(f"✅ ဇာတ်ကားထည့်ပြီးပါပြီ!\n\nနာမည်: {data['name']}\nCode: {data['code']}", protect_content=True)
+    await state.clear()
 
-# ==================== Delete Movie ====================
+# ==================== DELETE MOVIE ====================
 class DelMovie(StatesGroup):
     code = State()
 
-@dp.callback_query_handler(lambda c: c.data == "del_movie")
-async def del_movie(call: types.CallbackQuery):
-    if call.from_user.id != OWNER_ID:
+@dp.callback_query(F.data == "del_movie")
+async def del_movie_start(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id != OWNER_ID:
         return
-    await DelMovie.code.set()
-    await call.message.answer("🗑 ဖျက်မည့် ဇာတ်ကား Code ကိုထည့်ပါ:", protect_content=True)
-    await call.answer()
+    await state.set_state(DelMovie.code)
+    await callback.message.answer("🗑 ဖျက်မည့် ဇာတ်ကား Code ကိုထည့်ပါ:", protect_content=True)
+    await callback.answer()
 
-@dp.message_handler(state=DelMovie.code)
-async def del_movie_code(msg: types.Message, state: FSMContext):
-    code = msg.text.strip().upper()
+@dp.message(DelMovie.code)
+async def del_movie_code(message: types.Message, state: FSMContext):
+    code = message.text.strip().upper()
     await delete_movie(code)
-    await msg.answer(f"✅ Code `{code}` ဖျက်ပြီးပါပြီ။", protect_content=True)
-    await state.finish()
+    await message.answer(f"✅ Code `{code}` ဖျက်ပြီးပါပြီ။", protect_content=True)
+    await state.clear()
 
-# ==================== Broadcast ====================
+# ==================== BROADCAST ====================
 class Broadcast(StatesGroup):
     waiting_content = State()
     waiting_buttons = State()
     confirm = State()
 
-@dp.callback_query_handler(lambda c: c.data == "broadcast")
-async def bc(call: types.CallbackQuery):
-    if call.from_user.id != OWNER_ID:
+@dp.callback_query(F.data == "broadcast")
+async def broadcast_start(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id != OWNER_ID:
         return
-    await Broadcast.waiting_content.set()
-    await call.message.answer(
+    await state.set_state(Broadcast.waiting_content)
+    await callback.message.answer(
         "📢 Broadcast စာသား/ပုံ ပို့ပါ။\n\n"
         "📝 Formatting supported:\n"
         "• **bold**, *italic*, __underline__\n"
@@ -1401,44 +1417,57 @@ async def bc(call: types.CallbackQuery):
         "Photo/Video/GIF ပါ ပို့လို့ရပါတယ်။",
         protect_content=True
     )
-    await call.answer()
+    await callback.answer()
 
-@dp.message_handler(state=Broadcast.waiting_content, content_types=types.ContentTypes.ANY)
-async def bc_content(msg: types.Message, state: FSMContext):
-    content_type = msg.content_type
+@dp.message(Broadcast.waiting_content)
+async def broadcast_content(message: types.Message, state: FSMContext):
+    content_type = message.content_type
 
-    if content_type == "text":
-        await state.update_data(text=msg.text, content_type="text")
-    elif content_type == "photo":
-        photo_id = msg.photo[-1].file_id
-        caption = msg.caption or ""
+    if content_type == 'text':
+        await state.update_data(text=message.text, content_type="text")
+    elif content_type == 'photo':
+        photo_id = message.photo[-1].file_id
+        caption = message.caption or ""
         await state.update_data(photo_id=photo_id, caption=caption, content_type="photo")
-    elif content_type == "video":
-        video_id = msg.video.file_id
-        caption = msg.caption or ""
+    elif content_type == 'video':
+        video_id = message.video.file_id
+        caption = message.caption or ""
         await state.update_data(video_id=video_id, caption=caption, content_type="video")
-    elif content_type == "animation":
-        animation_id = msg.animation.file_id
-        caption = msg.caption or ""
+    elif content_type == 'animation':
+        animation_id = message.animation.file_id
+        caption = message.caption or ""
         await state.update_data(animation_id=animation_id, caption=caption, content_type="animation")
     else:
-        return await msg.answer("❌ Unsupported content type", protect_content=True)
+        return await message.answer("❌ Unsupported content type", protect_content=True)
 
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("✅ ပြန်ဖြစ်ရင်ပဲပို့မယ်", callback_data="bc_no_buttons"))
-    kb.add(InlineKeyboardButton("➕ Buttons ထည့်မယ်", callback_data="bc_add_buttons"))
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="✅ ပြန်ဖြစ်ရင်ပဲပို့မယ်", callback_data="bc_no_buttons"),
+        InlineKeyboardButton(text="➕ Buttons ထည့်မယ်", callback_data="bc_add_buttons"),
+        width=2
+    )
 
-    await msg.answer("Buttons ထည့်မလား?", reply_markup=kb, protect_content=True)
+    await message.answer("Buttons ထည့်မလား?", reply_markup=builder.as_markup(), protect_content=True)
 
-@dp.callback_query_handler(lambda c: c.data == "bc_no_buttons", state=Broadcast.waiting_content)
-async def bc_no_buttons(call: types.CallbackQuery, state: FSMContext):
+@dp.callback_query(Broadcast.waiting_content, F.data == "bc_no_buttons")
+async def broadcast_no_buttons(callback: CallbackQuery, state: FSMContext):
     await state.update_data(buttons=[])
-    await confirm_broadcast(call, state)
+    await state.set_state(Broadcast.confirm)
+    
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="✅ Confirm & Send", callback_data="bc_confirm"),
+        InlineKeyboardButton(text="❌ Cancel", callback_data="bc_cancel"),
+        width=2
+    )
+    
+    await callback.message.answer("📢 Broadcast ပို့မှာသေချာပြီလား?", reply_markup=builder.as_markup(), protect_content=True)
+    await callback.answer()
 
-@dp.callback_query_handler(lambda c: c.data == "bc_add_buttons", state=Broadcast.waiting_content)
-async def bc_add_buttons_start(call: types.CallbackQuery, state: FSMContext):
-    await Broadcast.waiting_buttons.set()
-    await call.message.answer(
+@dp.callback_query(Broadcast.waiting_content, F.data == "bc_add_buttons")
+async def broadcast_add_buttons_start(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(Broadcast.waiting_buttons)
+    await callback.message.answer(
         "📝 Buttons ထည့်ရန်:\n\n"
         "Format: Button Name | URL\n"
         "Example:\n"
@@ -1448,70 +1477,64 @@ async def bc_add_buttons_start(call: types.CallbackQuery, state: FSMContext):
         "ပြီးသွားရင် /done ရိုက်ပါ။",
         protect_content=True
     )
-    await call.answer()
+    await callback.answer()
 
-@dp.message_handler(state=Broadcast.waiting_buttons)
-async def bc_buttons_collect(msg: types.Message, state: FSMContext):
-    if msg.text == "/done":
+@dp.message(Broadcast.waiting_buttons)
+async def broadcast_buttons_collect(message: types.Message, state: FSMContext):
+    if message.text == "/done":
         data = await state.get_data()
         if not data.get("buttons"):
             await state.update_data(buttons=[])
-        await Broadcast.confirm.set()
-        await confirm_broadcast_message(msg, state)
+        await state.set_state(Broadcast.confirm)
+        
+        builder = InlineKeyboardBuilder()
+        builder.row(
+            InlineKeyboardButton(text="✅ Confirm & Send", callback_data="bc_confirm"),
+            InlineKeyboardButton(text="❌ Cancel", callback_data="bc_cancel"),
+            width=2
+        )
+        
+        await message.answer("📢 Broadcast ပို့မှာသေချာပြီလား?", reply_markup=builder.as_markup(), protect_content=True)
         return
 
-    if "|" not in msg.text:
-        return await msg.answer("❌ Format မမှန်ပါ။ Button Name | URL အဖြစ်ထည့်ပါ။", protect_content=True)
+    if "|" not in message.text:
+        return await message.answer("❌ Format မမှန်ပါ။ Button Name | URL အဖြစ်ထည့်ပါ။", protect_content=True)
 
-    parts = msg.text.split("|")
+    parts = message.text.split("|")
     if len(parts) != 2:
-        return await msg.answer("❌ Format မမှန်ပါ။", protect_content=True)
+        return await message.answer("❌ Format မမှန်ပါ။", protect_content=True)
 
     name = parts[0].strip()
     url = parts[1].strip()
 
     if not url.startswith(("http://", "https://")):
-        return await msg.answer("❌ URL မမှန်ပါ။", protect_content=True)
+        return await message.answer("❌ URL မမှန်ပါ။", protect_content=True)
 
     data = await state.get_data()
     buttons = data.get("buttons", [])
     buttons.append({"name": name, "url": url})
     await state.update_data(buttons=buttons)
 
-    await msg.answer(f"✅ Button '{name}' ထည့်ပြီး။\nထပ်ထည့်မယ်ဆိုရင် ဆက်ပို့ပါ။\nပြီးရင် /done ရိုက်ပါ။", protect_content=True)
+    await message.answer(f"✅ Button '{name}' ထည့်ပြီး။\nထပ်ထည့်မယ်ဆိုရင် ဆက်ပို့ပါ။\nပြီးရင် /done ရိုက်ပါ။", protect_content=True)
 
-async def confirm_broadcast(call: types.CallbackQuery, state: FSMContext):
-    await Broadcast.confirm.set()
-
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("✅ Confirm & Send", callback_data="bc_confirm"))
-    kb.add(InlineKeyboardButton("❌ Cancel", callback_data="bc_cancel"))
-
-    await call.message.answer("📢 Broadcast ပို့မှာသေချာပြီလား?", reply_markup=kb, protect_content=True)
-
-async def confirm_broadcast_message(msg: types.Message, state: FSMContext):
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("✅ Confirm & Send", callback_data="bc_confirm"))
-    kb.add(InlineKeyboardButton("❌ Cancel", callback_data="bc_cancel"))
-
-    await msg.answer("📢 Broadcast ပို့မှာသေချာပြီလား?", reply_markup=kb, protect_content=True)
-
-@dp.callback_query_handler(lambda c: c.data == "bc_confirm", state=Broadcast.confirm)
-async def bc_confirm(call: types.CallbackQuery, state: FSMContext):
+@dp.callback_query(Broadcast.confirm, F.data == "bc_confirm")
+async def broadcast_confirm(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     users = await get_users()
 
     buttons = data.get("buttons", [])
     kb = None
     if buttons:
-        kb = InlineKeyboardMarkup(row_width=1)
+        builder = InlineKeyboardBuilder()
         for btn in buttons:
-            kb.add(InlineKeyboardButton(btn["name"], url=btn["url"]))
+            builder.button(text=btn["name"], url=btn["url"])
+        builder.adjust(1)
+        kb = builder.as_markup()
 
     sent = 0
     failed = 0
 
-    status_msg = await call.message.answer(f"📢 Broadcasting... 0/{len(users)}", protect_content=True)
+    status_msg = await callback.message.answer(f"📢 Broadcasting... 0/{len(users)}", protect_content=True)
 
     for i, u in enumerate(users):
         try:
@@ -1535,145 +1558,91 @@ async def bc_confirm(call: types.CallbackQuery, state: FSMContext):
                 pass
 
     await status_msg.edit_text(f"✅ Broadcast complete!\n\n✅ Sent: {sent}\n❌ Failed: {failed}")
-    await state.finish()
-    await call.answer()
+    await state.clear()
+    await callback.answer()
 
-@dp.callback_query_handler(lambda c: c.data == "bc_cancel", state="*")
-async def bc_cancel(call: types.CallbackQuery, state: FSMContext):
-    await state.finish()
-    await call.message.answer("❌ Broadcast cancelled", protect_content=True)
-    await call.answer()
+@dp.callback_query(F.data == "bc_cancel")
+async def broadcast_cancel(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.answer("❌ Broadcast cancelled", protect_content=True)
+    await callback.answer()
 
-# ==================== OS Command ====================
-@dp.message_handler(commands=["os"])
-async def os_command(msg: types.Message):
-    if msg.chat.type not in ["group", "supergroup"]:
-        await msg.answer("This command can only be used in groups!", protect_content=True)
+# ==================== ADS MANAGER ====================
+class AddAd(StatesGroup):
+    msgid = State()
+    chatid = State()
+
+@dp.callback_query(F.data == "ads_manager")
+async def ads_manager_menu(callback: CallbackQuery):
+    if callback.from_user.id != OWNER_ID:
         return
 
-    config = await get_auto_delete_config()
-    group_sec = next((c["seconds"] for c in config if c["type"] == "group"), 0)
+    ads = await get_ads()
+    text = "📺 Ads Manager:\n\n"
+    if not ads:
+        text += "No ads added yet."
+    else:
+        for a in ads:
+            text += f"ID: {a['id']} | MsgID: {a['message_id']} | ChatID: {a['storage_chat_id']}\n"
 
-    response = await msg.reply(
-        "**owner-@osamu1123**\n\n"
-        "• Bot Status: ✅ Online\n"
-        "• Queue System: 🟢 Active (Batch: 30)\n"
-        "• Auto-Delete: " + ("✅ " + str(group_sec) + "s" if group_sec > 0 else "❌ Disabled") + "\n"
-        "• Version: 4.0 (JSON Storage)\n\n"
-        "Use /os name command.",
-        protect_content=True
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="➕ Add Ad", callback_data="add_ad_start"),
+        width=1
+    )
+    for a in ads:
+        builder.row(
+            InlineKeyboardButton(text=f"🗑 Delete Ad {a['id']}", callback_data=f"delad_{a['id']}"),
+            width=1
+        )
+    builder.row(
+        InlineKeyboardButton(text="⬅ Back", callback_data="back_admin"),
+        width=1
     )
 
-    if group_sec > 0:
-        asyncio.create_task(schedule_auto_delete("group", msg.chat.id, response.message_id, group_sec))
-        asyncio.create_task(schedule_auto_delete("group", msg.chat.id, msg.message_id, group_sec))
+    await callback.message.edit_text(text, reply_markup=builder.as_markup())
 
-# ==================== Search ====================
-@dp.message_handler()
-async def search(msg: types.Message):
-    if msg.text == "🔍 Search Movie":
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("🎬 Movie + Code ကြည့်ရန်", url="https://t.me/seatvmmmovielist"))
-        return await msg.answer("🔍 <b>ဇာတ်ကား Code ပို့ပေးပါ</b>", reply_markup=kb, protect_content=True)
-
-    if msg.text.startswith("/"):
+@dp.callback_query(F.data == "add_ad_start")
+async def add_ad_start(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id != OWNER_ID:
         return
+    await state.set_state(AddAd.msgid)
+    await callback.message.answer("Enter Ad Message ID:", protect_content=True)
+    await callback.answer()
 
-    if await is_maintenance() and msg.from_user.id != OWNER_ID:
-        return await msg.answer("🛠 Bot ပြုပြင်နေပါသဖြင့် ခေတ္တပိတ်ထားပါသည်။", protect_content=True)
+@dp.message(AddAd.msgid)
+async def add_ad_msgid(message: types.Message, state: FSMContext):
+    if not message.text.isdigit():
+        return await message.answer("Please enter a numeric Message ID.", protect_content=True)
+    await state.update_data(msgid=int(message.text))
+    await state.set_state(AddAd.chatid)
+    await message.answer("Enter Storage Group Chat ID for this Ad:", protect_content=True)
 
-    if not await check_force_join(msg.from_user.id):
-        sent = await send_force_join(msg)
-        if sent is False:
-            return
-
-    if msg.from_user.id != OWNER_ID:
-        last = await get_user_last(msg.from_user.id)
-        if last:
-            diff = datetime.now() - datetime.fromisoformat(last)
-            if diff.total_seconds() < COOLDOWN:
-                remain = int(COOLDOWN - diff.total_seconds())
-                return await msg.answer(f"⏳ ခေတ္တစောင့်ပေးပါ {remain} စက္ကန့်", protect_content=True)
-
-    code = msg.text.strip().upper()
-    movie = find_movie_by_code(code)
-
-    if not movie:
-        return await msg.answer(f"❌ Code `{code}` မရှိပါ။\n\n🔍 Search Movie နှိပ်ပြီး Code စစ်ပါ။", protect_content=True)
-
-    global ACTIVE_USERS
-
-    async with BATCH_LOCK:
-        if ACTIVE_USERS >= BATCH_SIZE:
-            await WAITING_QUEUE.put(msg.from_user.id)
-            position = WAITING_QUEUE.qsize()
-
-            queue_msg = await msg.answer(
-                f"⏳ **စောင့်ဆိုင်းနေဆဲအသုံးပြုသူများ**\n\n"
-                f"• သင့်နေရာ: **{position}**\n"
-                f"• လက်ရှိအသုံးပြုနေသူ: **{ACTIVE_USERS}/{BATCH_SIZE}**\n\n"
-                f"ကျေးဇူးပြု၍ စောင့်ဆိုင်းပေးပါ။",
-                protect_content=True
-            )
-
-            await asyncio.sleep(5)
-            await safe_delete_message(msg.chat.id, queue_msg.message_id)
-            return
-
-        ACTIVE_USERS += 1
-
+@dp.message(AddAd.chatid)
+async def add_ad_chatid(message: types.Message, state: FSMContext):
     try:
-        await update_user_search(msg.from_user.id)
-        USER_PROCESSING_TIME[msg.from_user.id] = datetime.now()
+        chatid = int(message.text)
+    except:
+        return await message.answer("Invalid Chat ID.", protect_content=True)
 
-        ads = await get_ads()
-        if ads:
-            idx = await get_next_ad_index()
-            if idx is not None and idx < len(ads):
-                ad = ads[idx]
-                try:
-                    ad_sent = await bot.copy_message(
-                        chat_id=msg.from_user.id,
-                        from_chat_id=ad["storage_chat_id"],
-                        message_id=ad["message_id"],
-                        protect_content=True
-                    )
-                    asyncio.create_task(schedule_auto_delete("dm", msg.from_user.id, ad_sent.message_id, 10))
-                    await asyncio.sleep(10)
-                except Exception as e:
-                    print(f"Error sending ad: {e}")
+    data = await state.get_data()
+    await add_ad(data["msgid"], chatid)
+    await message.answer("✅ Ad added successfully!", protect_content=True)
+    await state.clear()
 
-        searching_msg_id = await send_searching_overlay(msg.from_user.id)
+@dp.callback_query(F.data.startswith("delad_"))
+async def delete_ad_handler(callback: CallbackQuery):
+    if callback.from_user.id != OWNER_ID:
+        return
+    aid = callback.data.split("_")[1]
+    await delete_ad(aid)
+    await callback.answer("✅ Ad deleted", show_alert=True)
+    await ads_manager_menu(callback)
 
-        sent = await bot.copy_message(
-            chat_id=msg.from_user.id,
-            from_chat_id=movie["storage_chat_id"],
-            message_id=movie["message_id"],
-            reply_markup=InlineKeyboardMarkup().add(
-                InlineKeyboardButton("⚜️Owner⚜️", url="https://t.me/osamu1123")
-            ),
-            protect_content=True
-        )
-
-        if searching_msg_id:
-            await safe_delete_message(msg.from_user.id, searching_msg_id)
-
-        config = await get_auto_delete_config()
-        dm_sec = next((c["seconds"] for c in config if c["type"] == "dm"), 0)
-        if dm_sec > 0:
-            asyncio.create_task(schedule_auto_delete("dm", msg.from_user.id, sent.message_id, dm_sec))
-
-    except Exception as e:
-        print(f"Error sending movie: {e}")
-        await msg.answer("❌ Error sending movie. Please try again.", protect_content=True)
-    finally:
-        async with BATCH_LOCK:
-            ACTIVE_USERS -= 1
-
-# ==================== Backup ====================
-@dp.callback_query_handler(lambda c: c.data == "backup")
-async def backup_db(call: types.CallbackQuery):
-    if call.from_user.id != OWNER_ID:
+# ==================== BACKUP ====================
+@dp.callback_query(F.data == "backup")
+async def backup_handler(callback: CallbackQuery):
+    if callback.from_user.id != OWNER_ID:
         return
 
     data = {
@@ -1693,33 +1662,30 @@ async def backup_db(call: types.CallbackQuery):
 
     await bot.send_document(
         OWNER_ID,
-        InputFile("backup.json"),
+        FSInputFile("backup.json"),
         caption="📥 JSON Backup File",
         protect_content=True
     )
 
-    await call.answer("Backup sent!", show_alert=True)
+    await callback.answer("Backup sent!", show_alert=True)
 
-# ==================== Restore ====================
-@dp.callback_query_handler(lambda c: c.data == "restore")
-async def restore_request(call: types.CallbackQuery):
-    if call.from_user.id != OWNER_ID:
+# ==================== RESTORE ====================
+@dp.callback_query(F.data == "restore")
+async def restore_request(callback: CallbackQuery):
+    if callback.from_user.id != OWNER_ID:
         return
-    await call.message.answer("📤 Upload backup.json file", protect_content=True)
-    await call.answer()
+    await callback.message.answer("📤 Upload backup.json file", protect_content=True)
+    await callback.answer()
 
-@dp.message_handler(content_types=types.ContentTypes.DOCUMENT)
-async def restore_process(msg: types.Message):
-    if msg.from_user.id != OWNER_ID:
+@dp.message(F.document)
+async def restore_process(message: types.Message):
+    if message.from_user.id != OWNER_ID:
         return
 
     try:
-        file = await msg.document.download(destination_file="restore.json")
+        file = await bot.download_file(message.document.file_id)
+        data = json.loads(file.read())
 
-        with open("restore.json", "r", encoding="utf-8") as f:
-            data = json.load(f)
-
-        # Restore data
         if data.get("movies"):
             save_json("movies", data["movies"])
         if data.get("users"):
@@ -1740,22 +1706,376 @@ async def restore_process(msg: types.Message):
             save_json("ads", data["ads"])
 
         await reload_movies_cache()
-        await msg.answer("✅ Restore Completed from JSON backup!", protect_content=True)
+        await message.answer("✅ Restore Completed from JSON backup!", protect_content=True)
     except Exception as e:
-        await msg.answer(f"❌ Restore Failed: {str(e)}", protect_content=True)
+        await message.answer(f"❌ Restore Failed: {str(e)}", protect_content=True)
 
-# ==================== Group Message Handler ====================
-@dp.message_handler(content_types=ContentType.ANY, chat_type=["group", "supergroup"])
-async def group_message_handler(msg: types.Message):
+# ==================== MAINTENANCE ====================
+@dp.callback_query(F.data == "maint")
+async def maintenance_toggle(callback: CallbackQuery):
+    if callback.from_user.id != OWNER_ID:
+        return
+    current = await is_maintenance()
+    new = "off" if current else "on"
+    await set_setting("maint", new)
+    await callback.answer(f"Maintenance: {new.upper()}", show_alert=True)
+
+# ==================== START BUTTON MANAGEMENT (Continued) ====================
+class StartButtonManagement(StatesGroup):
+    waiting_for_name = State()
+    waiting_for_link = State()
+    waiting_for_type = State()
+    waiting_for_popup_text = State()
+
+@dp.callback_query(F.data == "manage_start_buttons")
+async def manage_start_buttons(callback: CallbackQuery):
+    if callback.from_user.id != OWNER_ID:
+        return
+
+    buttons = await get_start_buttons()
+    text = "⚙️ **Start Buttons Management**\n\n"
+
+    if not buttons:
+        text += "Buttons မရှိသေးပါ။\n"
+    else:
+        rows = await get_start_buttons_by_row()
+        for row_num in sorted(rows.keys()):
+            text += f"\n🔹 Row {row_num + 1}:\n"
+            for btn in rows[row_num]:
+                btn_type = btn.get("type", "url")
+                text += f"   • ID: {btn['id']} | {btn['name']} ({btn_type})\n"
+
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="➕ Add Button", callback_data="add_start_button"),
+        InlineKeyboardButton(text="🗑 Delete Button", callback_data="delete_start_button"),
+        width=2
+    )
+    builder.row(
+        InlineKeyboardButton(text="🖼 Manage Welcome", callback_data="manage_start_welcome"),
+        InlineKeyboardButton(text="⬅️ Back", callback_data="back_to_start"),
+        width=2
+    )
+
+    await callback.message.edit_text(text, reply_markup=builder.as_markup())
+
+@dp.callback_query(F.data == "add_start_button")
+async def add_start_button_start(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id != OWNER_ID:
+        return
+    await state.set_state(StartButtonManagement.waiting_for_name)
+    await callback.message.answer("🔹 Button နာမည်ထည့်ပါ:", protect_content=True)
+    await callback.answer()
+
+@dp.message(StartButtonManagement.waiting_for_name)
+async def add_start_button_name(message: types.Message, state: FSMContext):
+    await state.update_data(name=message.text)
+    await state.set_state(StartButtonManagement.waiting_for_type)
+
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="🔗 URL Button", callback_data="btn_type_url"),
+        InlineKeyboardButton(text="📢 Popup Button", callback_data="btn_type_popup"),
+        width=2
+    )
+    await message.answer("Button အမျိုးအစားရွေးပါ:", reply_markup=builder.as_markup(), protect_content=True)
+
+@dp.callback_query(StartButtonManagement.waiting_for_type, F.data.startswith("btn_type_"))
+async def add_start_button_type(callback: CallbackQuery, state: FSMContext):
+    btn_type = callback.data.split("_")[2]
+    await state.update_data(button_type=btn_type)
+
+    if btn_type == "url":
+        await state.set_state(StartButtonManagement.waiting_for_link)
+        await callback.message.answer("🔗 Button Link ထည့်ပါ (https://t.me/... or https://...):", protect_content=True)
+    else:
+        await state.set_state(StartButtonManagement.waiting_for_popup_text)
+        await callback.message.answer("📝 Popup စာသားထည့်ပါ:", protect_content=True)
+    await callback.answer()
+
+@dp.message(StartButtonManagement.waiting_for_link)
+async def add_start_button_link(message: types.Message, state: FSMContext):
+    if not message.text.startswith(('http://', 'https://')):
+        return await message.answer("❌ Link မမှန်ပါ။ http:// သို့မဟုတ် https:// နဲ့စပါ။", protect_content=True)
+
+    data = await state.get_data()
+    await add_start_button(data['name'], message.text, button_type="url")
+    await message.answer(f"✅ Button '{data['name']}' ထည့်ပြီးပါပြီ။", protect_content=True)
+    await state.clear()
+
+@dp.message(StartButtonManagement.waiting_for_popup_text)
+async def add_start_button_popup(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    callback_data = f"popup_{message.text[:20]}"
+    await add_start_button(data['name'], message.text, button_type="popup", callback_data=callback_data)
+    await message.answer(f"✅ Popup Button '{data['name']}' ထည့်ပြီးပါပြီ။", protect_content=True)
+    await state.clear()
+
+@dp.callback_query(F.data == "delete_start_button")
+async def delete_start_button_list(callback: CallbackQuery):
+    if callback.from_user.id != OWNER_ID:
+        return
+
+    buttons = await get_start_buttons()
+    if not buttons:
+        await callback.answer("❌ Button မရှိပါ။", show_alert=True)
+        return
+
+    builder = InlineKeyboardBuilder()
+    for btn in buttons:
+        builder.row(
+            InlineKeyboardButton(
+                text=f"🗑 {btn['name']} (Row {btn.get('row', 0)+1})",
+                callback_data=f"delstartbtn_{btn['id']}"
+            ),
+            width=1
+        )
+    builder.row(
+        InlineKeyboardButton(text="⬅️ Back", callback_data="manage_start_buttons"),
+        width=1
+    )
+
+    await callback.message.edit_text("ဖျက်မည့် Button ကိုရွေးပါ:", reply_markup=builder.as_markup())
+
+@dp.callback_query(F.data.startswith("delstartbtn_"))
+async def delete_start_button_confirm(callback: CallbackQuery):
+    if callback.from_user.id != OWNER_ID:
+        return
+
+    btn_id = callback.data.split("_")[1]
+    await delete_start_button(btn_id)
+    await callback.answer("✅ Button ဖျက်ပြီးပါပြီ။", show_alert=True)
+    await manage_start_buttons(callback)
+
+# ==================== WELCOME MANAGEMENT ====================
+class StartWelcomeManagement(StatesGroup):
+    waiting_for_photo = State()
+
+@dp.callback_query(F.data == "manage_start_welcome")
+async def manage_start_welcome(callback: CallbackQuery):
+    if callback.from_user.id != OWNER_ID:
+        return
+
+    welcome_list = await get_start_welcome()
+    text = f"🖼 **Start Welcome Management**\n\n"
+    text += f"📸 စုစုပေါင်းပုံ: {len(welcome_list)} ပုံ\n\n"
+
+    for i, w in enumerate(welcome_list):
+        if w.get("photo_id"):
+            text += f"{i+1}. 🖼 Photo - {w.get('caption', 'No caption')[:30]}\n"
+        else:
+            text += f"{i+1}. 📝 Text - {w.get('text', '')[:30]}\n"
+
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="➕ Add Photo", callback_data="add_welcome_photo"),
+        InlineKeyboardButton(text="➕ Add Text", callback_data="add_welcome_text"),
+        width=2
+    )
+    builder.row(
+        InlineKeyboardButton(text="🗑 Delete", callback_data="delete_welcome_item"),
+        InlineKeyboardButton(text="⬅️ Back", callback_data="manage_start_buttons"),
+        width=2
+    )
+
+    await callback.message.edit_text(text, reply_markup=builder.as_markup())
+
+@dp.callback_query(F.data == "add_welcome_photo")
+async def add_welcome_photo_start(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id != OWNER_ID:
+        return
+    await state.set_state(StartWelcomeManagement.waiting_for_photo)
+    await callback.message.answer(
+        "🖼 Welcome Photo ထည့်ရန် Photo ပို့ပါ။\n"
+        "Caption ပါထည့်ချင်ရင် Photo နဲ့အတူ Caption ရေးပို့ပါ။\n\n"
+        "📝 Formatting:\n"
+        "• **bold text** - စာလုံးမဲအတွက်\n"
+        "• *italic text* - စာလုံးစောင်းအတွက်\n"
+        "• __underline__ - မျဉ်းသားအတွက်\n"
+        "• ~~strikethrough~~ - ကြားမျဉ်းအတွက်\n"
+        "• `code` - Code အတွက်\n"
+        "• {mention} - User mention အတွက်\n"
+        "• {name} - User name အတွက်\n\n"
+        "မထည့်ချင်ရင် /cancel ရိုက်ပါ။",
+        protect_content=True
+    )
+    await callback.answer()
+
+@dp.message(StartWelcomeManagement.waiting_for_photo, F.photo)
+async def add_welcome_photo_done(message: types.Message, state: FSMContext):
+    photo_id = message.photo[-1].file_id
+    caption = message.caption or ""
+    await add_start_welcome(photo_id=photo_id, caption=caption, text=caption)
+    count = await get_start_welcome_count()
+    await message.answer(f"✅ Welcome Photo ထည့်ပြီးပါပြီ။\n📸 စုစုပေါင်းပုံ: {count} ပုံ", protect_content=True)
+    await state.clear()
+
+@dp.callback_query(F.data == "add_welcome_text")
+async def add_welcome_text_start(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id != OWNER_ID:
+        return
+    await state.set_state(StartWelcomeManagement.waiting_for_photo)
+    await callback.message.answer(
+        "📝 Welcome Text ထည့်ရန် စာသားပို့ပါ။\n\n"
+        "📝 Formatting:\n"
+        "• **bold text** - စာလုံးမဲအတွက်\n"
+        "• *italic text* - စာလုံးစောင်းအတွက်\n"
+        "• __underline__ - မျဉ်းသားအတွက်\n"
+        "• {mention} - User mention အတွက်\n"
+        "• {name} - User name အတွက်\n\n"
+        "မထည့်ချင်ရင် /cancel ရိုက်ပါ။",
+        protect_content=True
+    )
+    await callback.answer()
+
+@dp.message(StartWelcomeManagement.waiting_for_photo, F.text)
+async def add_welcome_text_done(message: types.Message, state: FSMContext):
+    if message.text == '/cancel':
+        await message.answer("❌ Cancelled", protect_content=True)
+        await state.clear()
+        return
+
+    await add_start_welcome(text=message.text)
+    count = await get_start_welcome_count()
+    await message.answer(f"✅ Welcome Text ထည့်ပြီးပါပြီ။\n📝 စုစုပေါင်း: {count} ခု", protect_content=True)
+    await state.clear()
+
+@dp.callback_query(F.data == "delete_welcome_item")
+async def delete_welcome_item_list(callback: CallbackQuery):
+    if callback.from_user.id != OWNER_ID:
+        return
+
+    welcome_list = await get_start_welcome()
+    if not welcome_list:
+        await callback.answer("❌ ဖျက်စရာမရှိပါ။", show_alert=True)
+        return
+
+    builder = InlineKeyboardBuilder()
+    for i, w in enumerate(welcome_list):
+        if w.get("photo_id"):
+            builder.row(
+                InlineKeyboardButton(
+                    text=f"🗑 {i+1}. 🖼 Photo - {w.get('caption', 'No caption')[:20]}",
+                    callback_data=f"delwelcome_{i}"
+                ),
+                width=1
+            )
+        else:
+            builder.row(
+                InlineKeyboardButton(
+                    text=f"🗑 {i+1}. 📝 Text - {w.get('text', '')[:20]}",
+                    callback_data=f"delwelcome_{i}"
+                ),
+                width=1
+            )
+    builder.row(
+        InlineKeyboardButton(text="⬅️ Back", callback_data="manage_start_welcome"),
+        width=1
+    )
+
+    await callback.message.edit_text("ဖျက်မည့် Welcome Item ကိုရွေးပါ:", reply_markup=builder.as_markup())
+
+@dp.callback_query(F.data.startswith("delwelcome_"))
+async def delete_welcome_item_confirm(callback: CallbackQuery):
+    if callback.from_user.id != OWNER_ID:
+        return
+
+    index = int(callback.data.split("_")[1])
+    if await delete_start_welcome(index):
+        await callback.answer("✅ ဖျက်ပြီးပါပြီ။", show_alert=True)
+    else:
+        await callback.answer("❌ ဖျက်လို့မရပါ။", show_alert=True)
+
+    await manage_start_welcome(callback)
+
+# ==================== OS COMMAND ====================
+@dp.message(Command("os"))
+async def os_command(message: types.Message):
+    if message.chat.type not in ["group", "supergroup"]:
+        await message.answer("This command can only be used in groups!", protect_content=True)
+        return
+
     config = await get_auto_delete_config()
     group_sec = next((c["seconds"] for c in config if c["type"] == "group"), 0)
 
-    if group_sec > 0 and not msg.text.startswith('/'):
-        asyncio.create_task(schedule_auto_delete("group", msg.chat.id, msg.message_id, group_sec))
+    response = await message.reply(
+        "**owner-@osamu1123**\n\n"
+        "• Bot Status: ✅ Online\n"
+        "• Queue System: 🟢 Active (Batch: 30)\n"
+        "• Auto-Delete: " + ("✅ " + str(group_sec) + "s" if group_sec > 0 else "❌ Disabled") + "\n"
+        "• Version: 4.0 (JSON Storage)\n\n"
+        "Use /os name command.",
+        protect_content=True
+    )
 
-# ==================== On Startup ====================
-async def on_startup(dp):
-    # Ensure all JSON files exist
+    if group_sec > 0:
+        asyncio.create_task(schedule_auto_delete("group", message.chat.id, response.message_id, group_sec))
+        asyncio.create_task(schedule_auto_delete("group", message.chat.id, message.message_id, group_sec))
+
+# ==================== TEST COLOR BUTTONS ====================
+@dp.message(Command("testcolor"))
+async def test_color_buttons(message: types.Message):
+    """Test Telegram 2026.2 Color Buttons"""
+    
+    builder = InlineKeyboardBuilder()
+    
+    builder.button(
+        text="🔵 အပြာရောင် Button",
+        callback_data="test_blue",
+        color="primary"
+    )
+    
+    builder.button(
+        text="🟢 အစိမ်းရောင် Button",
+        callback_data="test_green",
+        color="positive"
+    )
+    
+    builder.button(
+        text="🔴 အနီရောင် Button",
+        callback_data="test_red",
+        color="danger"
+    )
+    
+    builder.button(
+        text="⚪ မီးခိုးရောင် Button",
+        callback_data="test_gray"
+    )
+    
+    builder.adjust(1)
+    
+    await message.answer(
+        "🎨 **Telegram 2026.2 Color Button Test**\n\n"
+        "အောက်က Button တွေမှာ အရောင်တွေပြရင် ✅ အလုပ်လုပ်တယ်\n"
+        "အားလုံး မီးခိုးရောင်ပဲပြရင် ❌ အလုပ်မလုပ်ဘူး\n\n"
+        "**သင့် Telegram Version စစ်ရန်**\n"
+        "Settings → About → Version မှာကြည့်ပါ",
+        reply_markup=builder.as_markup()
+    )
+
+@dp.callback_query(F.data.startswith("test_"))
+async def handle_test_buttons(callback: CallbackQuery):
+    color_names = {
+        "test_blue": "အပြာ (Primary)",
+        "test_green": "အစိမ်း (Positive)",
+        "test_red": "အနီ (Danger)",
+        "test_gray": "မီးခိုး (Secondary)"
+    }
+    
+    color_name = color_names.get(callback.data, "Unknown")
+    await callback.answer(f"✅ {color_name} Button ကိုနှိပ်လိုက်ပါတယ်", show_alert=True)
+
+# ==================== GROUP MESSAGE HANDLER ====================
+@dp.message(F.chat.type.in_(["group", "supergroup"]))
+async def group_message_handler(message: types.Message):
+    config = await get_auto_delete_config()
+    group_sec = next((c["seconds"] for c in config if c["type"] == "group"), 0)
+
+    if group_sec > 0 and not message.text.startswith('/'):
+        asyncio.create_task(schedule_auto_delete("group", message.chat.id, message.message_id, group_sec))
+
+# ==================== ON STARTUP ====================
+async def on_startup():
     for file in ["movies", "users", "ads", "settings", "force_channels", 
                  "custom_texts", "auto_delete", "start_buttons", "start_welcome"]:
         if not os.path.exists(f"{DATA_DIR}/{file}.json"):
@@ -1766,9 +2086,15 @@ async def on_startup(dp):
     print("✅ Bot started with JSON Storage")
     print(f"✅ Movies in cache: {len(MOVIES_DICT)}")
     print(f"✅ Batch size: {BATCH_SIZE}")
+    print("✅ Telegram 2026.2 Color Buttons Enabled (Primary, Positive, Danger)")
 
     welcome_count = await get_start_welcome_count()
     print(f"✅ Welcome photos: {welcome_count}")
 
+# ==================== MAIN ====================
+async def main():
+    await on_startup()
+    await dp.start_polling(bot)
+
 if __name__ == "__main__":
-    executor.start_polling(dp, on_startup=on_startup, skip_updates=True)
+    asyncio.run(main())
