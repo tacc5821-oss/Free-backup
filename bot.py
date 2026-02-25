@@ -38,7 +38,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
  ADD_AD_MSGID, ADD_AD_CHATID,
  EDIT_TEXT_WAITING,
  START_BUTTON_NAME, START_BUTTON_TYPE, START_BUTTON_LINK, START_BUTTON_POPUP,
- WELCOME_PHOTO, WELCOME_TEXT) = range(16)
+ WELCOME_PHOTO, WELCOME_TEXT) = range(17)
 
 # ==================== COLOR BUTTON FUNCTION (2026.2 SUPPORT) ====================
 def color_button(text: str, 
